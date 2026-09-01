@@ -109,10 +109,22 @@
   .row.me .meta { text-align: right; }
   .sys { text-align: center; font-size: 11px; color: var(--muted); margin: 8px 0; }
   .tool { font-size: 12px; color: var(--muted); background: var(--panel); border: 1px solid var(--line);
-    border-radius: 10px; padding: 6px 10px; margin: 4px 0; display: flex; gap: 6px; align-items: baseline; }
+    border-radius: 10px; padding: 6px 10px; margin: 4px 0; display: flex; gap: 6px; align-items: baseline;
+    cursor: pointer; }
   .tool .tname { color: var(--ink); font-weight: 600; flex-shrink: 0; }
   .tool .targs { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+  .tool.open .targs { white-space: pre-wrap; word-break: break-all; }
   .tool.err .tname { color: var(--bad); }
+  /* 代码块（阶段 2）：围栏渲染，横向滚动，暗色变量随系统 */
+  .bubble pre.code { background: rgba(127,127,127,.12); border: 1px solid var(--line); border-radius: 8px;
+    padding: 8px; margin: 6px 0 2px; overflow-x: auto; white-space: normal;
+    font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; }
+  .bubble pre.code .codeLang { font-size: 10px; color: var(--muted); text-transform: uppercase;
+    letter-spacing: .05em; margin-bottom: 4px; }
+  .bubble pre.code code { white-space: pre; font: inherit; }
+  ::selection { background: rgba(77,107,254,.35); }
+  #stream::-webkit-scrollbar { width: 4px; }
+  #stream::-webkit-scrollbar-thumb { background: var(--line); border-radius: 2px; }
   .thinking { font-size: 12px; color: var(--muted); font-style: italic; margin: 4px 6px; }
   #newMsg {
     position: fixed; bottom: 84px; left: 50%; transform: translateX(-50%);
@@ -247,11 +259,32 @@ function nearBottom() {
   return streamEl.scrollHeight - streamEl.scrollTop - streamEl.clientHeight < 60;
 }
 function afterAppend(force) {
+  trimStream();
   if (force || state.nearBottom) {
     streamEl.scrollTop = streamEl.scrollHeight;
     $('newMsg').classList.remove('show');
   } else {
     $('newMsg').classList.add('show');
+  }
+}
+// 消息流节点上限：超出从最旧一侧折叠（spec 的截断方案；虚拟滚动在本体量下性价比不足）。
+var STREAM_MAX = 350;
+function trimStream() {
+  var excess = streamEl.childElementCount - STREAM_MAX;
+  if (excess <= 0) return;
+  for (var i = 0; i < excess; i++) {
+    var node = streamEl.firstElementChild;
+    if (!node) break;
+    var cid = node.getAttribute('data-call');
+    if (cid) delete toolLines[cid]; // 同步清理工具行索引，防悬挂引用
+    node.remove();
+  }
+  if (!streamEl.firstElementChild || streamEl.firstElementChild.id !== 'trimMark') {
+    var mark = document.createElement('div');
+    mark.id = 'trimMark';
+    mark.className = 'sys';
+    mark.textContent = '…较早内容已折叠…';
+    streamEl.insertBefore(mark, streamEl.firstChild);
   }
 }
 /** 用户/助手消息的文本提取：content 块数组里取 text 块（其余类型由专属事件渲染）。 */
@@ -319,8 +352,7 @@ function handleSession(ev) {
       var finalText = contentText(data.message && data.message.content);
       finishStreaming(data.turn, data.step, finalText);
       break;
-    }
-    case 'tool/call':
+    }    case 'tool/call':
       addToolLine(data.callId, data.name, data.arguments);
       break;
     case 'tool/result': {
@@ -375,11 +407,15 @@ function addToolLine(callId, name, args) {
   var argText = '';
   try { argText = typeof args === 'string' ? args : JSON.stringify(args); } catch (e) { argText = ''; }
   a.textContent = argText;
-  a.title = argText;
   el.appendChild(n);
   el.appendChild(a);
+  // 点击展开/收起完整参数（默认单行省略）
+  el.addEventListener('click', function () { el.classList.toggle('open'); });
   streamEl.appendChild(el);
-  if (callId) toolLines[callId] = el;
+  if (callId) {
+    toolLines[callId] = el;
+    el.setAttribute('data-call', callId); // 折叠清理时同步索引
+  }
   afterAppend();
 }
 function markToolResult(callId, ok) {
@@ -400,16 +436,60 @@ function showThinking() {
   streamEl.appendChild(el);
   afterAppend();
 }
+/** 富文本渲染（零依赖、全部 textContent 防注入）：按 ``` 围栏拆分，代码段进 pre。
+ *  流式期间仍保持纯文本渲染（性能），仅在收到最终 assistant/message 时重渲染一次。 */
+function renderContent(bubble, text) {
+  bubble.textContent = '';
+  var parts = String(text).split('```');
+  for (var i = 0; i < parts.length; i++) {
+    if (i % 2 === 1) {
+      var seg = parts[i];
+      var lang = '';
+      var nl = seg.indexOf('\n');
+      if (nl >= 0) {
+        var first = seg.slice(0, nl).trim();
+        if (/^[A-Za-z0-9_+#.\/-]{1,20}$/.test(first)) { lang = first; seg = seg.slice(nl + 1); }
+      }
+      var pre = document.createElement('pre');
+      pre.className = 'code';
+      if (lang) {
+        var lb = document.createElement('div');
+        lb.className = 'codeLang';
+        lb.textContent = lang;
+        pre.appendChild(lb);
+      }
+      var code = document.createElement('code');
+      code.textContent = seg.replace(/\n$/, '');
+      pre.appendChild(code);
+      bubble.appendChild(pre);
+    } else if (parts[i]) {
+      var tn = document.createElement('span');
+      tn.textContent = parts[i];
+      bubble.appendChild(tn);
+    }
+  }
+}
 function finishStreaming(turn, step, finalText) {
   var key = (turn === undefined ? '?' : turn) + ':' + (step === undefined ? '?' : step);
   var b = streamingBubbles[key];
   var think = document.getElementById('thinkingHint');
   if (think) think.remove();
   if (b) {
-    if (finalText) b.bubble.textContent = finalText; // 以最终消息为准
+    if (finalText) renderContent(b.bubble, finalText); // 以最终消息为准 + 代码块富渲染
     delete streamingBubbles[key];
   } else if (finalText) {
-    addBubble('ai', finalText, '🤖 · ' + fmtTime());
+    // 无对应流式气泡（如补发的历史帧）：直接落一条最终消息
+    var el = document.createElement('div');
+    el.className = 'row';
+    var bubble = document.createElement('div');
+    bubble.className = 'bubble';
+    el.appendChild(bubble);
+    streamEl.appendChild(el);
+    renderContent(bubble, finalText);
+    var m = document.createElement('div');
+    m.className = 'meta';
+    m.textContent = '🤖 · ' + fmtTime();
+    streamEl.appendChild(m);
   }
   afterAppend();
 }
@@ -484,6 +564,14 @@ inputEl.addEventListener('keydown', function (e) {
   }
 });
 sendBtn.addEventListener('click', send);
+// 发送失败文案分场景：指引下一步动作而非裸报错。
+function sendErrText(r) {
+  var code = r && r.code;
+  if (code === 'agent-unavailable') return '会话已结束或未就绪，点右上「☰ 会话」切换';
+  if (code === 'throttled') return '发送太快，请等 ' + Math.ceil((r && r.retryAfterMs || 1000) / 1000) + ' 秒';
+  if (code === 'no-session') return '尚未绑定会话，点右上「☰ 会话」选择';
+  return '发送失败：' + ((r && r.message) || '未知错误');
+}
 function send() {
   var text = inputEl.value.trim();
   if (!text) return;
@@ -497,7 +585,7 @@ function send() {
         inputEl.style.height = 'auto';
         // 消息本体经 session/event 流回来渲染，这里不重复插气泡
       } else {
-        toast('发送失败：' + ((r && r.message) || '未知错误'));
+        toast(sendErrText(r));
       }
       state.sendLockUntil = Date.now() + state.throttleSec * 1000;
       refreshSendBtn();
@@ -654,6 +742,7 @@ function setSession(sid, cwd) {
   state.sessionId = sid || null;
   var short = sid ? String(sid).replace(/^session-/, '').slice(0, 8) : null;
   $('connText').textContent = (short ? '会话 ' + short : '等待电脑端会话…') + (cwd ? ' · ' + cwd : '');
+  $('input').placeholder = sid ? '发消息给当前会话…' : '未绑定会话，点右上「☰ 会话」选择';
 }
 
 // ── 配对失效处理（阶段 2，对齐 ZCode：过期需电脑端重新生成）──────────────
