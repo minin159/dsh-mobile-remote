@@ -40,7 +40,7 @@ mobile-remote（DSH Cordis 插件，独立目录 D:\dsh-plugins\mobile-remote）
 | 阶段 | 内容 | 预算(token) | 验收 |
 |---|---|---|---|
 | 0 探针 ✅ | webServer 路由/长连接能力、steer 持续对话、审批语义、会话枚举、手机连通性、二维码呈现 | 8–15 万 | probe-findings.md 六项三态结论 + phase-1-spec 修订（2026-09-02 完成，tag `phase-0-done`；六项均证实，P5 手机侧待实测回填） |
-| 1 MVP | 单会话远程控制：扫码/链接进入、实时看流、手机发消息、y/n 审批、断线自动恢复 | 25–40 万 | 手机端逐项实测清单通过 |
+| 1 MVP ✅ | 单会话远程控制：扫码/链接进入、实时看流、手机发消息、y/n 审批、断线自动恢复 | 25–40 万 | 验收八项全部有结论（2026-09-02，tag `phase-1-done`）：全路由 curl 通过；真实手机端实测 看流/steer/审批允许/审批拒绝/停止远程提示/断线重连+游标补发；超时回落经 GUI 弹窗应答闭环；停用回归（页面 503/SSE 404/中继关闭）通过 |
 | 2 完整对齐 | 会话列表与切换、状态标签、踢出/过期/重配对、审计 JSONL、恢复加固与 UI 打磨 | 20–35 万 | 对齐 ZCode 功能面 |
 | 3 可选 | 公网 relay（需服务器）/ Bot Channel 类入口 | 15–25 万 | 用户点名才做 |
 
@@ -62,6 +62,9 @@ mobile-remote（DSH Cordis 插件，独立目录 D:\dsh-plugins\mobile-remote）
 6. **steer 来源标记**：手机消息一律 `source:{kind:'plugin',plugin:'mobile-remote'}`，便于区分与后续审计。
 7. **运行时**：Windows，node v24 在 PATH；DSH 为 Cordis 宿主（运行时事实见下节清单）。
 8. **工程约定**：代码注释中文；conventional commits（feat:/fix:/docs:）；不主动 push 远程（远程仓库是否建立由用户决定）。
+9. **部署 = 插件内置路径过滤中继**（阶段 1 实测修正）：DSH web CLI 显式封禁 `--host 0.0.0.0`（dsh-web-app startup.js 安全检查），webserver config schema 也只允许 `127.0.0.1|0.0.0.0`——宿主设计意图是 web 本体不出回环。mobile-remote 自带反向代理（默认 0.0.0.0:3090 → 127.0.0.1:3080，仅放行 /mobile-remote/*，设置接口在中继层显式封禁），比整站暴露更安全。P5 的 `dsh web --host 0.0.0.0` 前提据此作废。
+10. **会话绑定 = 真人输入优先**（阶段 1 实测修正）：`pickSession` 只认 `user/message` 且 `source.kind==='user'` 的事件（真人键盘输入）作为"当前会话"信号，其次会话创建时间；不用"最近事件活跃"——失败重试循环的会话事件流不断，实测会永久霸占绑定并误收 steer。
+11. **审批共存**：phone-push 也在监听 approval/request（waterfall 顺序 = bundle 注册顺序，phone-push 先答）。ntfy 在线时同一审批会双通道推送（ntfy 卡片 + 手机页面审批条），先答者终局、后答者 404——功能不冲突但提示会重复；ntfy 离线时 phone-push 自动回落，单通道无感。手机审批条上的 id 与 ntfy 卡片无关联，属预期。
 
 ## DSH 运行时清单（写适配代码的事实依据，沿用 phone-push 已验证结论）
 
@@ -85,7 +88,9 @@ mobile-remote（DSH Cordis 插件，独立目录 D:\dsh-plugins\mobile-remote）
 - steer 持续对话有频控/副作用 → **P2 已实测：无频控、无武装要求**；发送节流保留为 UI 防连点（2s）。
 - 手机批准后电脑端仍弹 GUI → **P3 已实测：插件决策即终局，GUI 不弹**；「混合回落」语义保留，超时由插件自实现。
 - 手机连通性（Tailscale 唤醒时延、休眠）→ **P5 局域网侧已实测通过**（微信 WebView/Edge 建连 31–183ms、RTT ~25ms）；安卓息屏回前台走整页重载 → 阶段 1 按 `?since=<lastEventId>` 补发设计；Tailscale 侧出门场景补测。
-- **生产 DSH 默认只绑回环** → 阶段 1 部署前提：`dsh web --host 0.0.0.0`。
+- ~~生产 DSH 默认只绑回环~~ → **阶段 1 已解决（决策 9）**：DSH 封禁 0.0.0.0，插件内置路径过滤中继（默认 3090 端口）承担手机可达性；中继端口可在设置页调整。Tailscale 场景把 publicBase 设为 100.x:3090 即可，出门首次使用前建议补测一次连通。
+- **绑定被"僵尸活跃"会话霸占** → 阶段 1 实测踩坑并修复（决策 10）：重试循环会话事件不断，曾把测试 steer 误送进用户在用会话；已改为只认真人输入。
+- **审批多插件共存双推送** → 已记录（决策 11）：与 phone-push 并存时同一审批可能双通道提示，先答终局；后续阶段可考虑探测共存并让位。
 - 测试需要用户手机配合：每阶段验收列出手机动作清单。
 
 ## 仓库约定

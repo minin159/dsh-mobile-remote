@@ -35,6 +35,7 @@ import { randomUUID, randomBytes, timingSafeEqual, createHash } from 'node:crypt
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { networkInterfaces } from 'node:os';
+import { createServer as createRelayServer, request as httpRequest } from 'node:http';
 
 export const name = 'mobile-remote';
 
@@ -56,6 +57,7 @@ const DEFAULTS = {
   token: '',
   approvalWaitSec: 120, // 手机审批等待窗口；超时 next() 回落电脑端 GUI
   sendThrottleSec: 2,   // 发送节流（防连点，UI 同步用）
+  relayPort: 3090,      // 手机中继监听端口（0.0.0.0）；DSH web 本体保持回环
 };
 
 /** 环形缓冲上限：每会话缓存最近 200 条转发帧，供断线/整页重载后补发。 */
@@ -117,6 +119,26 @@ async function loadLlm() {
   return llmCache;
 }
 
+// schemastery 加载：插件以 link 形式装在 profile 外，裸说明符解析不到宿主包，
+// 退回从运行中的 dsh 入口锚定解析（phone-push 同款两级策略）。
+let zCache;
+async function loadZ() {
+  if (zCache) return zCache;
+  try {
+    zCache = (await import('@deepseek-ai/schemastery')).default;
+    if (zCache) return zCache;
+  } catch {}
+  try {
+    const req = createRequire(process.argv[1] || import.meta.url);
+    const resolved = req.resolve('@deepseek-ai/schemastery');
+    zCache = (await import(pathToFileURL(resolved).href)).default;
+    return zCache;
+  } catch (error) {
+    console.error(PLUGIN_TAG, 'cannot load schemastery:', msgOf(error));
+    return null;
+  }
+}
+
 /** 生成本轮运行 401 独立提示页（不含任何敏感信息）。 */
 function errorPage(title, detail) {
   return `<!doctype html><html lang="zh"><head><meta charset="utf-8">
@@ -169,10 +191,13 @@ export function apply(ctx, config) {
       (async () => {
         try {
           if (scope && scope.settings) {
-            const z = (await import('@deepseek-ai/schemastery')).default ??
-              (await import('@deepseek-ai/schemastery'));
-            settingsHandle = scope.settings.register('mobile-remote', buildSchema(z, seed), { applies: 'live' });
-            console.log(PLUGIN_TAG, 'settings namespace registered');
+            const z = await loadZ();
+            if (z) {
+              settingsHandle = scope.settings.register('mobile-remote', buildSchema(z, seed), { applies: 'live' });
+              console.log(PLUGIN_TAG, 'settings namespace registered');
+            } else {
+              console.log(PLUGIN_TAG, 'schemastery unavailable; running with defaults (no settings card)');
+            }
           } else {
             console.log(PLUGIN_TAG, 'settings service absent; running with defaults');
           }
@@ -189,12 +214,16 @@ export function apply(ctx, config) {
     const s = seedConfig && typeof seedConfig === 'object' ? seedConfig : {};
     return z.object({
       enabled: z.boolean().default(false),
-      // 手机侧可达的对外地址（如 http://192.168.10.10:3080 或 Tailscale 地址）；
-      // 空 = 设置页用自动探测的局域网地址拼配对链接。
+      // 手机侧可达的对外地址（如 http://192.168.10.10:3090 或 Tailscale 地址）；
+      // 空 = 设置页用自动探测的局域网地址 + 中继端口拼配对链接。
       publicBase: z.string().default(typeof s.publicBase === 'string' ? s.publicBase.trim().replace(/\/+$/, '') : DEFAULTS.publicBase),
       token: z.string().default(typeof s.token === 'string' ? s.token : DEFAULTS.token), // 配对码即密码；首次启用自动生成
       approvalWaitSec: z.number().default(clampInt(s.approvalWaitSec, 15, 600, DEFAULTS.approvalWaitSec)),
       sendThrottleSec: z.number().default(clampInt(s.sendThrottleSec, 1, 60, DEFAULTS.sendThrottleSec)),
+      // 手机中继端口：DSH web CLI 封禁 --host 0.0.0.0（宿主安全策略，实测 dsh-web-app
+      // startup.js + webserver config schema 双层限制），插件自带路径过滤反向代理，
+      // 只把 /mobile-remote/* 暴露到局域网，DSH 本体不出回环。
+      relayPort: z.number().default(clampInt(s.relayPort, 0, 65535, DEFAULTS.relayPort)),
     });
   }
 
@@ -205,6 +234,7 @@ export function apply(ctx, config) {
     token: typeof seed.token === 'string' ? seed.token : DEFAULTS.token,
     approvalWaitSec: clampInt(seed.approvalWaitSec, 15, 600, DEFAULTS.approvalWaitSec),
     sendThrottleSec: clampInt(seed.sendThrottleSec, 1, 60, DEFAULTS.sendThrottleSec),
+    relayPort: clampInt(seed.relayPort, 0, 65535, DEFAULTS.relayPort),
   };
 
   /** 当前生效配置（命名空间未就绪时回退默认值）。 */
@@ -213,6 +243,92 @@ export function apply(ctx, config) {
       try { return settingsHandle.get(); } catch {}
     }
     return fallbackState;
+  }
+
+  // ── 手机中继：路径过滤反向代理（0.0.0.0:relayPort → 127.0.0.1:webPort）─────
+  // 背景：DSH web CLI 显式封禁 --host 0.0.0.0，webserver config schema 也只允许
+  // 回环/0.0.0.0——宿主的设计意图是 web 本体不出回环。中继只放行 /mobile-remote/*
+  // （token 已在各自路由内校验），比把整个 DSH 座舱暴露到局域网更安全。
+  let relayServer = null;
+  let relayError = '';
+
+  /** DSH web 上游端口：优先取 webserver 服务的实际监听端口，兜底 3080。 */
+  function upstreamPort() {
+    try {
+      const web = ctx.get('webServer');
+      if (web && typeof web.port === 'number' && web.port > 0) return web.port;
+    } catch {}
+    return 3080;
+  }
+
+  function startRelay() {
+    const s = st();
+    const port = clampInt(s.relayPort, 0, 65535, DEFAULTS.relayPort);
+    if (!s.enabled || !port || relayServer) return;
+    try {
+      relayServer = createRelayServer((req, res) => {
+        const path = (req.url || '').split('?')[0];
+        const allowed = path.startsWith(ROUTE_PREFIX) && path !== ROUTE_API;
+        if (!allowed) {
+          // 显式封掉设置接口：中继会把 Host 改写为回环，绕过宿主侧的 loopbackOnly，
+          // 而该接口的响应含完整配对链接——绝不能让手机侧可达。
+          res.statusCode = 404;
+          res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+          res.end('mobile-remote relay: path not allowed');
+          return;
+        }
+        // 常规 HTTP 转发（含 SSE 流式响应：pipe 不缓冲，逐块透传）。
+        const headers = { ...req.headers, host: '127.0.0.1:' + upstreamPort() };
+        const proxy = httpRequest({
+          host: '127.0.0.1',
+          port: upstreamPort(),
+          path: req.url,
+          method: req.method,
+          headers,
+        }, (pRes) => {
+          try {
+            res.writeHead(pRes.statusCode || 502, pRes.headers);
+            pRes.pipe(res);
+          } catch {}
+        });
+        proxy.on('error', () => {
+          try {
+            res.statusCode = 502;
+            res.end('mobile-remote relay: upstream unavailable');
+          } catch {}
+        });
+        req.pipe(proxy);
+      });
+      relayServer.on('upgrade', () => { /* MVP 不代理 WS 升级 */ });
+      relayServer.on('error', (error) => {
+        relayError = msgOf(error);
+        console.error(PLUGIN_TAG, '中继监听失败 port=' + port + ':', relayError);
+        try { relayServer.close(); } catch {}
+        relayServer = null;
+      });
+      relayServer.listen(port, '0.0.0.0', () => {
+        relayError = '';
+        console.log(PLUGIN_TAG, '手机中继已启动 0.0.0.0:' + port + ' → 127.0.0.1:' + upstreamPort());
+      });
+    } catch (error) {
+      relayError = msgOf(error);
+      console.error(PLUGIN_TAG, '中继启动异常:', relayError);
+      relayServer = null;
+    }
+  }
+
+  function stopRelay() {
+    if (!relayServer) return;
+    try { relayServer.close(); } catch {}
+    relayServer = null;
+    console.log(PLUGIN_TAG, '手机中继已停止');
+  }
+
+  /** 中继自愈：enabled 且未启动则启动（设置热切换后与请求路径上都会调用）。 */
+  function ensureRelay() {
+    const s = st();
+    if (s.enabled && !relayServer && clampInt(s.relayPort, 0, 65535, DEFAULTS.relayPort)) startRelay();
+    if (!s.enabled && relayServer) stopRelay();
   }
 
   // ── 进程内运行状态 ───────────────────────────────────────────────────────
@@ -231,8 +347,8 @@ export function apply(ctx, config) {
 
   function touchActivity(sid, patch) {
     if (!sid) return;
-    const prev = activity.get(sid) || { lastAt: 0 };
-    const next = { ...prev, ...patch, lastAt: Date.now() };
+    const prev = activity.get(sid) || { lastAt: 0, humanAt: 0 };
+    const next = { lastAt: Date.now(), humanAt: prev.humanAt || 0, ...patch };
     if (activity.size >= ACTIVITY_CAP && !activity.has(sid)) {
       // 淘汰最旧的一条（Map 保持插入序，第一条即最旧）。
       const oldest = activity.keys().next().value;
@@ -334,8 +450,10 @@ export function apply(ctx, config) {
   }
 
   /**
-   * 选定"电脑当前会话"：根 agent 里最近活跃者优先；
-   * agents 服务不可用时退回 sessions.list()（live 会话）再退回活动表。
+   * 选定"电脑当前会话"：真人最近输入过的根会话优先（humanAt）；
+   * 没有真人输入记录时退回会话创建时间（新开的会话优先），
+   * 再退回 sessions.list()。任何"最近事件活跃"都不作为依据——
+   * 失败重试循环和后台会话的事件流会永远霸占"最近活跃"，实测有此坑。
    */
   function pickSession() {
     try {
@@ -345,9 +463,11 @@ export function apply(ctx, config) {
         for (const a of agents.roots()) {
           const sid = a?.session?.header?.id;
           if (!sid) continue;
-          const at = activity.get(String(sid))?.lastAt ?? 0;
-          if (!best || at > best.at) {
-            best = { sid: String(sid), at, cwd: a?.session?.header?.cwd || '' };
+          const info = activity.get(String(sid)) || {};
+          const created = Date.parse(a?.session?.header?.createdAt || '') || 0;
+          const score = info.humanAt || created; // 真人输入 > 最近创建
+          if (!best || score > best.score) {
+            best = { sid: String(sid), score, cwd: a?.session?.header?.cwd || '' };
           }
         }
         if (best) return best;
@@ -360,22 +480,17 @@ export function apply(ctx, config) {
         for (const s of store.list()) {
           const sid = s?.header?.id;
           if (!sid) continue;
-          const at = activity.get(String(sid))?.lastAt ?? 0;
+          const info = activity.get(String(sid)) || {};
           const created = Date.parse(s?.header?.createdAt || '') || 0;
-          const score = at || created;
+          const score = info.humanAt || created;
           if (!best || score > best.score) {
-            best = { sid: String(sid), at, score, cwd: s?.header?.cwd || '' };
+            best = { sid: String(sid), score, cwd: s?.header?.cwd || '' };
           }
         }
         if (best) return { sid: best.sid, cwd: best.cwd };
       }
     } catch {}
-    // 最后兜底：纯活动表里最近的一条（可能是已结束会话，仅展示用）。
-    let best = null;
-    for (const [sid, info] of activity) {
-      if (!best || info.lastAt > best.at) best = { sid, at: info.lastAt, cwd: info.cwd || '' };
-    }
-    return best ? { sid: best.sid, cwd: best.cwd } : null;
+    return null;
   }
 
   function bindSession(sel) {
@@ -437,7 +552,10 @@ export function apply(ctx, config) {
       const sid = String(subject?.header?.id || subject?.id || '');
       if (!sid) return;
       const type = String(event?.type || '');
-      touchActivity(sid);
+      // "真人输入"标记：只有电脑端用户敲下的 user/message 才算（source.kind === 'user'）。
+      // 插件 steer（kind:'plugin'）、失败重试轮、后台事件都不能代表"用户正在这个会话"。
+      const isHumanInput = type === 'user/message' && event?.data?.source?.kind === 'user';
+      touchActivity(sid, isHumanInput ? { humanAt: Date.now() } : undefined);
       // 未绑定 + 有手机连接：首个根会话事件自动补绑（手机先开、电脑后干活的场景）。
       if (!boundSid && activeConn && st().enabled) {
         const roots = rootSessionIds();
@@ -535,8 +653,9 @@ export function apply(ctx, config) {
     }
   });
 
-  // 插件卸载：断开手机、挂起审批回落，避免留下悬挂 Promise。
+  // 插件卸载：断开手机、挂起审批回落、停掉中继，避免留下悬挂资源。
   ctx.effect(() => () => {
+    try { stopRelay(); } catch {}
     try { stopRemote('插件卸载'); } catch {}
   }, 'mobile-remote: teardown');
 
@@ -594,7 +713,7 @@ export function apply(ctx, config) {
     }
   }
 
-  /** 从请求 Host 头取端口（自动拼局域网配对链接用）。 */
+  /** 从请求 Host 头取端口（保留给调试 URL 拼装场景）。 */
   function portOf(hostHeader) {
     const m = String(hostHeader || '').match(/:(\d+)$/);
     return m ? m[1] : '80';
@@ -607,15 +726,17 @@ export function apply(ctx, config) {
     const hostHeader = String(req.headers.host || '127.0.0.1:3080');
     const local = token ? `http://${hostHeader}${ROUTE_PREFIX}p/${token}` : '';
     const { lan, tailscale } = pickLanAddrs();
+    const relayPort = clampInt(s.relayPort, 0, 65535, DEFAULTS.relayPort);
     let phone = '';
     let phoneSource = '';
     if (token) {
       if (s.publicBase) {
         phone = `${s.publicBase}${ROUTE_PREFIX}p/${token}`;
         phoneSource = 'publicBase';
-      } else if (lan.length > 0) {
-        phone = `http://${lan[0]}:${portOf(hostHeader)}${ROUTE_PREFIX}p/${token}`;
-        phoneSource = 'auto-lan';
+      } else if (lan.length > 0 && relayPort) {
+        // 手机地址走中继端口（DSH web 本体只绑回环，手机不可直达 3080）。
+        phone = `http://${lan[0]}:${relayPort}${ROUTE_PREFIX}p/${token}`;
+        phoneSource = 'relay';
       } else {
         phone = local; // 没有任何可用对外地址：退回本机调试地址并提示
         phoneSource = 'loopback';
@@ -629,6 +750,9 @@ export function apply(ctx, config) {
       tokenMasked: maskToken(token),
       approvalWaitSec: clampInt(s.approvalWaitSec, 15, 600, DEFAULTS.approvalWaitSec),
       sendThrottleSec: clampInt(s.sendThrottleSec, 1, 60, DEFAULTS.sendThrottleSec),
+      relayPort,
+      relayRunning: Boolean(relayServer),
+      relayError,
       active: activeConn ? 1 : 0,
       boundSession: boundSid,
       urls: { local, phone, phoneSource },
@@ -691,6 +815,9 @@ export function apply(ctx, config) {
           if (Number.isSafeInteger(parsed.sendThrottleSec) && parsed.sendThrottleSec >= 1 && parsed.sendThrottleSec <= 60) {
             patch.sendThrottleSec = parsed.sendThrottleSec;
           }
+          if (Number.isSafeInteger(parsed.relayPort) && parsed.relayPort >= 0 && parsed.relayPort <= 65535) {
+            patch.relayPort = parsed.relayPort;
+          }
           try {
             if (Object.keys(patch).length > 0) await settingsHandle.update(patch);
           } catch (error) {
@@ -698,6 +825,7 @@ export function apply(ctx, config) {
             return;
           }
           if (patch.enabled === true) await ensureToken();
+          ensureRelay(); // 中继跟随 enabled 热启停；端口变更同样在此生效
           if (stopRequested) stopRemote(parsed.resetToken ? '配对码重置' : '电脑端请求停止');
           console.log(PLUGIN_TAG, '设置已更新: enabled=' + st().enabled
             + ' publicBase=' + (st().publicBase ? '已配置' : '未配置')
@@ -716,6 +844,7 @@ export function apply(ctx, config) {
             sendJson(res, 404, { ok: false, code: 'disabled', message: '远程控制未开启' });
             return;
           }
+          ensureRelay(); // 中继自愈（进程内异常重启后第一条请求即恢复）
           if (!tokenOk(url.searchParams.get('token') || '')) {
             console.log(PLUGIN_TAG, 'SSE 鉴权失败（配对码不匹配）');
             sendJson(res, 401, { ok: false, code: 'bad-token', message: '配对码无效' });
@@ -896,9 +1025,11 @@ export function apply(ctx, config) {
       });
 
       // 5) 移动端单页：/mobile-remote/p/<token>，token 即路径段，错码 401。
+      // 注意宿主 prefix 匹配是 pathname.startsWith(path + '/')（P1 实测），
+      // 注册路径不能带尾斜杠，否则变成 /mobile-remote// 永不匹配。
       reg({
         kind: 'prefix',
-        path: ROUTE_PREFIX,
+        path: '/mobile-remote',
         handler: async (req, res) => {
           const url = new URL(req.url, 'http://x');
           const pathname = url.pathname;
@@ -912,6 +1043,7 @@ export function apply(ctx, config) {
             sendHtml(res, 503, errorPage('远程未开启', '请在电脑端 DSH 设置页打开「移动端远程控制」开关。'));
             return;
           }
+          ensureRelay(); // 中继自愈
           const m = pathname.match(/^\/mobile-remote\/p\/([A-Za-z0-9_-]+)\/?$/);
           if (!m) {
             sendHtml(res, 404, errorPage('缺少配对码', '请通过电脑端设置页的二维码或链接打开本页。'));
@@ -977,8 +1109,9 @@ export function apply(ctx, config) {
   // 启动日志：token 打码；publicBase 是否配置只报有无，不回显全文。
   void ready.then(() => {
     ensureToken(); // 已配置过 token 则幂等跳过
+    ensureRelay(); // 开机已是启用态则直接拉起中继
     const s = st();
     console.log(PLUGIN_TAG, `ready; enabled=${s.enabled} token=${maskToken(s.token)}`
-      + ` publicBase=${s.publicBase ? '已配置' : '未配置'} waitSec=${s.approvalWaitSec}`);
+      + ` publicBase=${s.publicBase ? '已配置' : '未配置'} waitSec=${s.approvalWaitSec} relayPort=${s.relayPort}`);
   });
 }

@@ -2331,6 +2331,9 @@ window.__ModuleLoader__.load({
         hasToken: json.hasToken === true,
         approvalWaitSec: typeof json.approvalWaitSec === 'number' ? json.approvalWaitSec : 120,
         sendThrottleSec: typeof json.sendThrottleSec === 'number' ? json.sendThrottleSec : 2,
+        relayPort: typeof json.relayPort === 'number' ? json.relayPort : 3090,
+        relayRunning: json.relayRunning === true,
+        relayError: typeof json.relayError === 'string' ? json.relayError : '',
         active: typeof json.active === 'number' ? json.active : 0,
         boundSession: typeof json.boundSession === 'string' ? json.boundSession : null,
         urls: json.urls || { local: '', phone: '', phoneSource: '' },
@@ -2571,15 +2574,15 @@ window.__ModuleLoader__.load({
                 h('div', { style: { textAlign: 'center', fontSize: '12px', color: 'var(--dsw-alias-label-tertiary, rgba(127,127,127,0.7))', paddingBottom: '8px' } },
                   phoneUrl ? '手机扫码或复制链接即可进入（配对码即密码，请勿外传）' : '配对码生成中…'),
                 // 双地址
-                urlRow('手机访问地址' + (model.urls.phoneSource === 'auto-lan' ? '（自动探测）' : model.urls.phoneSource === 'loopback' ? '（⚠ 本机回环，手机不可达）' : ''), phoneUrl),
+                urlRow('手机访问地址' + (model.urls.phoneSource === 'relay' ? '（经中继端口 ' + model.relayPort + '）' : model.urls.phoneSource === 'publicBase' ? '（固定对外地址）' : model.urls.phoneSource === 'loopback' ? '（⚠ 本机回环，手机不可达）' : ''), phoneUrl),
                 urlRow('电脑调试地址', localUrl),
                 h('div', { style: { fontSize: '11.5px', color: 'var(--dsw-alias-label-tertiary, rgba(127,127,127,0.6))', padding: '6px 0' } },
-                  lanHint + ' · 手机可达前提：DSH 以 dsh web --host 0.0.0.0 启动'),
+                  (lanHint + ' · DSH web 本体只绑回环（宿主安全策略），手机流量经插件中继端口 ' + model.relayPort + ' 转发，仅放行 /mobile-remote/* 路径。' + (model.relayRunning ? '中继运行中 ✓' : '⚠ 中继未运行' + (model.relayError ? '：' + model.relayError : '')))),
                 // publicBase 固定地址
                 h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', padding: '6px 0' } },
                   h('input', {
                     value: pbInput,
-                    placeholder: '固定对外地址（可选），如 http://192.168.10.10:3080',
+                    placeholder: '固定对外地址（可选），如 http://192.168.10.10:3090',
                     onChange: function (e) { setPbInput(e.target.value) },
                     style: {
                       flex: 1, minWidth: 0, font: 'inherit', fontSize: '12px',

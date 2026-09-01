@@ -2,3 +2,9 @@
 probe/results/
 probe/workspace/
 node_modules/
+
+# 本地运维临时文件（不入库）
+.web-start.cmd
+.web-run.log
+.web-run.err.log
+.sse-capture.log

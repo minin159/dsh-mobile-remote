@@ -36,11 +36,16 @@
    cmd //c mklink /J "C:\Users\<你>\.dsh\profiles\web\node_modules\mobile-remote" "D:\dsh-plugins\mobile-remote"
    ```
 
-3. **以 `--host 0.0.0.0` 启动 DSH web**（生产默认只绑 127.0.0.1，手机不可达，P5 实测结论）：
+3. **启动 DSH web（默认方式即可）**——DSH 出于安全封禁 `--host 0.0.0.0`，web 本体只绑回环：
 
    ```sh
-   dsh web --host 0.0.0.0
+   dsh web
    ```
+
+   手机可达性由插件内置**路径过滤中继**承担：启用远程后插件自动监听
+   `0.0.0.0:3090`（可在设置页调整）并转发到 `127.0.0.1:3080`，只放行
+   `/mobile-remote/*` 路径，DSH 本体不暴露到局域网。设置页会自动给出
+   `http://<局域网IP>:3090/mobile-remote/p/<token>` 形式的手机地址与二维码。
 
 4. 打开 DSH 设置页 →「移动端远程」→ 打开开关 → 手机扫码。
 
