@@ -16,6 +16,8 @@
  *   exact  /mobile-remote/sse       手机长连接（?token=<配对码>&since=<上次事件号>）
  *   exact  /mobile-remote/send      手机发消息（POST {token,text} → agent.steer）
  *   exact  /mobile-remote/approve   手机审批（POST {token,id,decision}）
+ *   exact  /mobile-remote/sessions  会话列表（阶段 2，GET ?token=）
+ *   exact  /mobile-remote/switch    切换绑定会话（阶段 2，POST {token,sessionId}）
  *   prefix /mobile-remote/          移动端单页（/p/<token>，token 即路径段，错码 401）
  *
  * 安全模型：
@@ -46,6 +48,8 @@ const ROUTE_API = '/mobile-remote/api';
 const ROUTE_SSE = '/mobile-remote/sse';
 const ROUTE_SEND = '/mobile-remote/send';
 const ROUTE_APPROVE = '/mobile-remote/approve';
+const ROUTE_SESSIONS = '/mobile-remote/sessions';
+const ROUTE_SWITCH = '/mobile-remote/switch';
 const ROUTE_PREFIX = '/mobile-remote/';
 
 const PLUGIN_TAG = '[mobile-remote]';
@@ -60,10 +64,10 @@ const DEFAULTS = {
   relayPort: 3090,      // 手机中继监听端口（0.0.0.0）；DSH web 本体保持回环
 };
 
-/** 环形缓冲上限：每会话缓存最近 200 条转发帧，供断线/整页重载后补发。 */
+/** 环形缓冲上限：每会话缓存最近 200 条转发帧，供断线/整页重载/切换会话后补发。 */
 const RING_CAP = 200;
-/** 环形缓冲最多追踪的会话数（超出淘汰最旧的）。 */
-const RING_SESSIONS = 8;
+/** 环形缓冲最多追踪的会话数（阶段 2 起所有根会话都入缓冲，上限放宽到 16）。 */
+const RING_SESSIONS = 16;
 /** 活动追踪表上限（session/activity 状态，防膨胀）。 */
 const ACTIVITY_CAP = 32;
 /** 单帧体积上限：超过则只转发/缓存"已截断"占位（正文已由 assistant/chunk 增量送达）。 */
@@ -339,6 +343,7 @@ export function apply(ctx, config) {
   let activeConn = null;             // 当前绑定的唯一手机连接（单连接语义）
   let boundSid = null;               // 当前远程绑定的会话 id
   let boundCwd = '';                 // 绑定会话的工作目录（页面展示用）
+  let pinnedSid = null;              // 手机端手动选定的会话（阶段 2 切换语义；null = 跟随电脑当前会话）
   let lastSendAt = 0;                // 上次手机发消息时间（节流）
   const activity = new Map();        // sid → { lastAt, cwd?, status? } 最近活动
   const ring = new Map();            // sid → [{ seq, frame }] 断线补发缓冲
@@ -508,6 +513,7 @@ export function apply(ctx, config) {
     clearGraceTimer();
     boundSid = null;
     boundCwd = '';
+    pinnedSid = null; // 钉住语义随"停止远程"一起清除，下次连接回到自动挑选
     if (activeConn) {
       try {
         activeConn.res.write(`event: stopped\ndata: {}\n\n`);
@@ -556,17 +562,29 @@ export function apply(ctx, config) {
       // 插件 steer（kind:'plugin'）、失败重试轮、后台事件都不能代表"用户正在这个会话"。
       const isHumanInput = type === 'user/message' && event?.data?.source?.kind === 'user';
       touchActivity(sid, isHumanInput ? { humanAt: Date.now() } : undefined);
+      if (!st().enabled) return; // 停用即零参与：不建帧、不转发、不占缓冲
       // 未绑定 + 有手机连接：首个根会话事件自动补绑（手机先开、电脑后干活的场景）。
-      if (!boundSid && activeConn && st().enabled) {
+      if (!boundSid && activeConn) {
         const roots = rootSessionIds();
         if (roots === null || roots.has(sid)) {
           bindSession({ sid, cwd: '' });
           sendFrame('bound', { sessionId: boundSid, cwd: boundCwd });
         }
       }
-      if (!st().enabled || !activeConn || sid !== boundSid) return;
+      // 阶段 2 转发策略：绑定会话直发 + 全部根会话入环形缓冲。
+      // 阶段 1 只在绑定会话上转发，会让"切换会话"看到空白流——现在 enabled 期间
+      // 所有根会话的事件都建帧入各自缓冲（有界：16 会话 × 200 帧），切换/重连时
+      // 按连接级游标补发；子代理等非根会话不入缓冲。
+      const isBound = sid === boundSid;
+      if (!isBound) {
+        const roots = rootSessionIds();
+        if (roots === null || !roots.has(sid)) return;
+      }
       const { frame, seq } = buildSessionFrame(sid, type, event?.data ?? {});
-      activeConn.res.write(frame); // 直发完整帧（活动连接不走环形缓冲里的瘦身版）
+      if (activeConn && isBound) {
+        try { activeConn.res.write(frame); } catch {} // 直发完整帧
+        activeConn.cursorBySid.set(sid, seq);         // 连接级会话游标：切换补发去重
+      }
       // 审计事件顺带驱动挂起审批的对账（防御：正常路径由手机 POST 先行 settle）。
       if (type === 'approval/decided' && event?.data?.id && pendings.has(String(event.data.id))) {
         const p = pendings.get(String(event.data.id));
@@ -755,10 +773,97 @@ export function apply(ctx, config) {
       relayError,
       active: activeConn ? 1 : 0,
       boundSession: boundSid,
+      pinnedSession: pinnedSid,
       urls: { local, phone, phoneSource },
       lan,
       tailscale,
     };
+  }
+
+  // ── 会话列表视图（阶段 2）：全量逻辑会话 + 标题 + 运行态合并 ────────────────
+  const titleCache = new Map(); // sid → { title, at }：标题折叠要回放会话日志，缓存 60s 控制开销
+  async function listSessionsView() {
+    const out = [];
+    // 1) 全量逻辑会话（live 优先、newest-first、带持久化标志；P4 实测形状）。
+    try {
+      const q = ctx.get('sessionQuery');
+      if (q && typeof q.listSessions === 'function') {
+        const all = await q.listSessions();
+        for (const rec of Array.isArray(all) ? all : []) {
+          const h = rec?.header || {};
+          const sid = h.id !== undefined && h.id !== null ? String(h.id) : '';
+          if (!sid) continue;
+          out.push({
+            id: sid,
+            createdAt: typeof h.createdAt === 'number' ? h.createdAt : (Date.parse(h.createdAt) || 0),
+            cwd: typeof h.cwd === 'string' ? h.cwd : '',
+            live: rec.live === true,
+            persisted: rec.persisted === true,
+          });
+        }
+      }
+    } catch {}
+    // 2) sessionQuery 不可用时退回 live 会话枚举。
+    if (out.length === 0) {
+      try {
+        const store = ctx.get('sessions');
+        if (store && typeof store.list === 'function') {
+          for (const s of store.list()) {
+            const sid = String(s?.header?.id || s?.id || '');
+            if (!sid) continue;
+            out.push({
+              id: sid,
+              createdAt: typeof s?.header?.createdAt === 'number' ? s.header.createdAt : (Date.parse(s?.header?.createdAt) || 0),
+              cwd: typeof s?.header?.cwd === 'string' ? s.header.cwd : '',
+              live: true,
+              persisted: false,
+            });
+          }
+        }
+      } catch {}
+    }
+    // 3) 标题：readTitleSnapshots 按会话回放日志折叠 session/title（结果逐会话
+    //    fulfilled/rejected 隔离），批量上限 50 + 60s 缓存，避免频繁开抽屉都全量回放。
+    const now = Date.now();
+    const missing = [];
+    for (const it of out) {
+      const c = titleCache.get(it.id);
+      if (c && now - c.at < 60 * 1000) it.title = c.title;
+      else missing.push(it.id);
+    }
+    if (missing.length > 0) {
+      try {
+        const q = ctx.get('sessionQuery');
+        if (q && typeof q.readTitleSnapshots === 'function') {
+          const snaps = await q.readTitleSnapshots(missing.slice(0, 50));
+          if (Array.isArray(snaps)) {
+            for (let i = 0; i < snaps.length; i++) {
+              const snap = snaps[i];
+              // projectMany 结果形状：{sessionId, status:'fulfilled'|'rejected', value?}；
+              // 兼容直接返回值的形态，防御宿主版本差异。
+              const value = snap && snap.status === 'fulfilled' ? snap.value : (snap && !snap.status ? snap : null);
+              const title = value && value.title && typeof value.title.title === 'string' ? value.title.title : '';
+              titleCache.set(missing[i], { title, at: now });
+            }
+          }
+        }
+      } catch {}
+      for (const it of out) {
+        if (it.title === undefined) {
+          const c = titleCache.get(it.id);
+          it.title = (c && c.title) || '';
+        }
+      }
+    }
+    // 4) 合并运行态（activity）与绑定标记；上限 100 条（手机抽屉用不了更多）。
+    for (const it of out) {
+      const a = activity.get(it.id);
+      it.status = a?.status || (it.live ? 'idle' : 'ended');
+      it.humanAt = a?.humanAt || 0;
+      it.bound = it.id === boundSid;
+    }
+    if (out.length > 100) out.length = 100;
+    return out;
   }
 
   // ── 路由注册（P1 实测形态：exact 先于 prefix 匹配）────────────────────────
@@ -863,8 +968,13 @@ export function apply(ctx, config) {
             console.log(PLUGIN_TAG, '旧手机连接已被顶替 #' + old.id);
           }
 
-          // 选定并绑定"电脑当前会话"。
-          bindSession(pickSession());
+          // 选定并绑定会话：手机端钉住过则回到钉住的会话（切换语义跨重连保持）；
+          // 否则自动挑选"电脑当前会话"（真人输入优先，决策 10）。
+          if (pinnedSid) {
+            bindSession({ sid: pinnedSid, cwd: activity.get(pinnedSid)?.cwd || '' });
+          } else {
+            bindSession(pickSession());
+          }
 
           res.writeHead(200, {
             'Content-Type': 'text/event-stream; charset=utf-8',
@@ -873,17 +983,23 @@ export function apply(ctx, config) {
             'X-Accel-Buffering': 'no',
           });
           res.write(': connected\n\n'); // 立即冲刷头部，确认链路
-          const conn = { id: randomUUID().slice(0, 8), res, heartbeat: null };
+          const conn = { id: randomUUID().slice(0, 8), res, heartbeat: null, cursorBySid: new Map() };
           activeConn = conn;
           clearGraceTimer();
 
           // 断点补发：只补当前绑定会话、seq 大于游标的帧（P5：整页重载是主恢复路径）。
-          if (boundSid && since !== null) {
+          // 首次进入（无游标）也回放缓冲里的近期帧，手机一进来就能看到最近对话；
+          // 补发后记下该会话的连接级游标，切走再切回时只补没看过的帧。
+          if (boundSid) {
+            const cursor = since !== null ? since : 0;
+            let maxSeq = cursor;
             for (const item of ringFor(boundSid)) {
-              if (item.seq > since) {
+              if (item.seq > cursor) {
                 try { res.write(item.frame); } catch {}
+                if (item.seq > maxSeq) maxSeq = item.seq;
               }
             }
+            conn.cursorBySid.set(boundSid, maxSeq);
           }
           const s = st();
           sendFrame('hello', {
@@ -1024,7 +1140,121 @@ export function apply(ctx, config) {
         },
       });
 
-      // 5) 移动端单页：/mobile-remote/p/<token>，token 即路径段，错码 401。
+      // 5) 会话列表（阶段 2）：手机端抽屉数据源。
+      reg({
+        kind: 'exact',
+        path: ROUTE_SESSIONS,
+        handler: async (req, res) => {
+          if (req.method !== 'GET') {
+            sendJson(res, 405, { ok: false, code: 'method-not-allowed', message: 'GET only' });
+            return;
+          }
+          if (!st().enabled) {
+            sendJson(res, 404, { ok: false, code: 'disabled', message: '远程控制未开启' });
+            return;
+          }
+          ensureRelay(); // 中继自愈
+          const url = new URL(req.url, 'http://x');
+          if (!tokenOk(url.searchParams.get('token') || '')) {
+            sendJson(res, 401, { ok: false, code: 'bad-token', message: '配对码无效' });
+            return;
+          }
+          const sessions = await listSessionsView();
+          sendJson(res, 200, { ok: true, sessions, boundSession: boundSid, pinnedSession: pinnedSid });
+        },
+      });
+
+      // 6) 切换绑定会话（阶段 2）：sessionId 为空 = 回到"跟随电脑当前会话"。
+      //    切换只改本进程绑定与手机端流；挂起审批不属于任何会话视图，保持全局可答。
+      reg({
+        kind: 'exact',
+        path: ROUTE_SWITCH,
+        handler: async (req, res) => {
+          if (req.method !== 'POST') {
+            sendJson(res, 405, { ok: false, code: 'method-not-allowed', message: 'POST only' });
+            return;
+          }
+          if (!st().enabled) {
+            sendJson(res, 404, { ok: false, code: 'disabled', message: '远程控制未开启' });
+            return;
+          }
+          let parsed;
+          try {
+            parsed = await readJson(req, 4 * 1024);
+          } catch (error) {
+            sendJson(res, 400, { ok: false, code: 'invalid-request', message: msgOf(error) });
+            return;
+          }
+          if (!tokenOk(String(parsed.token || ''))) {
+            sendJson(res, 401, { ok: false, code: 'bad-token', message: '配对码无效' });
+            return;
+          }
+          const sid = typeof parsed.sessionId === 'string' ? parsed.sessionId.trim() : '';
+          let live = true;
+          if (!sid) {
+            pinnedSid = null; // 清除钉住，回到自动挑选
+            const target = pickSession();
+            if (!target) {
+              sendJson(res, 409, { ok: false, code: 'no-session', message: '电脑端暂无可绑定的会话' });
+              return;
+            }
+            bindSession(target);
+          } else {
+            // 校验目标会话存在（sessions.list 查 live，sessionQuery 查全量含持久化）。
+            let found = false;
+            let cwd = activity.get(sid)?.cwd || '';
+            try {
+              const store = ctx.get('sessions');
+              if (store && typeof store.list === 'function') {
+                for (const s of store.list()) {
+                  if (String(s?.header?.id || s?.id || '') === sid) {
+                    found = true; live = true; cwd = s?.header?.cwd || cwd;
+                    break;
+                  }
+                }
+              }
+            } catch {}
+            if (!found) {
+              try {
+                const q = ctx.get('sessionQuery');
+                if (q && typeof q.listSessions === 'function') {
+                  const all = await q.listSessions();
+                  for (const rec of Array.isArray(all) ? all : []) {
+                    if (String(rec?.header?.id) === sid) {
+                      found = true; live = rec?.live === true; cwd = rec?.header?.cwd || cwd;
+                      break;
+                    }
+                  }
+                }
+              } catch {}
+            }
+            if (!found) {
+              sendJson(res, 404, { ok: false, code: 'session-not-found', message: '会话不存在或已清理' });
+              return;
+            }
+            pinnedSid = sid;
+            bindSession({ sid, cwd });
+          }
+          // 通知页面（switched=true 时页面清空消息流），随后按连接级游标补发目标会话近期帧。
+          sendFrame('bound', { sessionId: boundSid, cwd: boundCwd, switched: true, live });
+          const conn = activeConn;
+          if (conn && boundSid) {
+            const cursor = conn.cursorBySid.get(boundSid) || 0;
+            let maxSeq = cursor;
+            for (const item of ringFor(boundSid)) {
+              if (item.seq > cursor) {
+                try { conn.res.write(item.frame); } catch {}
+                if (item.seq > maxSeq) maxSeq = item.seq;
+              }
+            }
+            conn.cursorBySid.set(boundSid, maxSeq);
+          }
+          console.log(PLUGIN_TAG, '切换绑定会话 →', (boundSid || '无') + (sid ? '' : '（跟随电脑）'));
+          sendJson(res, 200, { ok: true, sessionId: boundSid, cwd: boundCwd, live });
+        },
+      });
+
+      // 7) 移动端单页：/mobile-remote/p/<token>，token 即路径段，错码 401。
       // 注意宿主 prefix 匹配是 pathname.startsWith(path + '/')（P1 实测），
       // 注册路径不能带尾斜杠，否则变成 /mobile-remote// 永不匹配。
       reg({

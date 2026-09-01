@@ -41,8 +41,32 @@
   .chip { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line);
     color: var(--muted); flex-shrink: 0; }
   .chip.run { color: var(--ok); border-color: var(--ok); }
-  #rebindBtn { border: 1px solid var(--line); background: transparent; color: var(--muted);
+  #sessionsBtn { border: 1px solid var(--line); background: transparent; color: var(--muted);
     border-radius: 8px; font-size: 13px; padding: 3px 9px; flex-shrink: 0; }
+  /* ── 会话抽屉（阶段 2）────────────────────────────────── */
+  #drawerMask { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 29; }
+  #drawerMask.show { display: block; }
+  #drawer {
+    display: none; position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
+    background: var(--panel); border-radius: 16px 16px 0 0;
+    max-height: 72vh; box-shadow: 0 -6px 24px rgba(0,0,0,.3);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  #drawer.show { display: flex; flex-direction: column; }
+  #drawerHead { display: flex; align-items: center; padding: 12px 14px 6px; gap: 8px; }
+  #drawerHead .t { font-weight: 600; font-size: 15px; flex: 1; }
+  #drawerClose { border: 0; background: transparent; color: var(--muted); font-size: 18px; padding: 2px 8px; }
+  #sessList { overflow-y: auto; padding: 0 8px 12px; -webkit-overflow-scrolling: touch; }
+  .sessItem { display: flex; align-items: center; gap: 8px; padding: 10px; border-radius: 10px; cursor: pointer; }
+  .sessItem:active { background: var(--bg); }
+  .sessItem.bound { background: var(--bg); }
+  .sessMain { flex: 1; min-width: 0; }
+  .sessTitle { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sessSub { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; margin-top: 2px; }
+  .schip { font-size: 10.5px; padding: 2px 7px; border-radius: 999px; border: 1px solid var(--line);
+    color: var(--muted); flex-shrink: 0; }
+  .schip.run { color: var(--ok); border-color: var(--ok); }
   /* ── 横幅（停止/顶替）────────────────────────────────── */
   .banner {
     display: none; padding: 10px 14px; font-size: 13px; line-height: 1.5;
@@ -123,7 +147,7 @@
   <div id="connDot"></div>
   <div id="connText">连接中…</div>
   <div id="agentChip" class="chip">—</div>
-  <button id="rebindBtn" title="断开并重新绑定电脑当前会话">⟳ 换绑</button>
+  <button id="sessionsBtn" title="查看会话列表并切换">☰ 会话</button>
 </header>
 
 <div id="stoppedBanner" class="banner">
@@ -133,6 +157,12 @@
 <div id="replacedBanner" class="banner">
   <span>本页面已在其他设备打开，连接被顶替</span>
   <button id="takeoverBtn">夺回连接</button>
+</div>
+
+<div id="drawerMask"></div>
+<div id="drawer">
+  <div id="drawerHead"><span class="t">会话</span><button id="drawerClose">✕ 关闭</button></div>
+  <div id="sessList"></div>
 </div>
 
 <div id="approvalBar">
@@ -199,6 +229,9 @@ function toast(msg) {
 }
 function fmtTime() {
   var d = new Date();
+  return ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
+}
+function fmtTimeOf(d) {
   return ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
 }
 function nearBottom() {
@@ -477,6 +510,111 @@ function postJSON(path, body) {
   }).then(function (r) { return r.json(); });
 }
 
+// ── 会话抽屉（阶段 2）：列表 + 切换 ─────────────────────────────────────
+var sessListEl = $('sessList');
+function shortSid(sid) { return sid ? String(sid).replace(/^session-/, '').slice(0, 8) : ''; }
+function clearStream() {
+  streamEl.innerHTML = '';
+  streamingBubbles = {};
+  toolLines = {};
+  state.nearBottom = true;
+  $('newMsg').classList.remove('show');
+}
+function openDrawer() {
+  $('drawer').classList.add('show');
+  $('drawerMask').classList.add('show');
+  sessListEl.innerHTML = '';
+  var loading = document.createElement('div');
+  loading.className = 'sys';
+  loading.textContent = '加载中…';
+  sessListEl.appendChild(loading);
+  fetch('/mobile-remote/sessions?token=' + encodeURIComponent(token))
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      if (d && d.ok) renderSessions(d.sessions || []);
+      else { closeDrawer(); toast('会话列表加载失败：' + ((d && d.message) || '未知错误')); }
+    })
+    .catch(function () {
+      sessListEl.innerHTML = '';
+      var el = document.createElement('div');
+      el.className = 'sys';
+      el.textContent = '网络错误，稍后再试';
+      sessListEl.appendChild(el);
+    });
+}
+function closeDrawer() {
+  $('drawer').classList.remove('show');
+  $('drawerMask').classList.remove('show');
+}
+function statusLabel(st) {
+  if (st === 'running') return '运行中';
+  if (st === 'done') return '完成';
+  if (st === 'error') return '错误';
+  if (st === 'ended') return '已结束';
+  return '空闲';
+}
+function statusChipCls(st) {
+  if (st === 'running') return 'run';
+  if (st === 'error') return 'err';
+  if (st === 'done') return 'done';
+  return '';
+}
+function sessItemRow(title, sub, chipText, chipCls, bound, onClick) {
+  var item = document.createElement('div');
+  item.className = 'sessItem' + (bound ? ' bound' : '');
+  var main = document.createElement('div');
+  main.className = 'sessMain';
+  var t = document.createElement('div');
+  t.className = 'sessTitle';
+  t.textContent = title;
+  var s = document.createElement('div');
+  s.className = 'sessSub';
+  s.textContent = sub;
+  main.appendChild(t);
+  main.appendChild(s);
+  var chip = document.createElement('span');
+  chip.className = 'schip' + (chipCls ? ' ' + chipCls : '');
+  chip.textContent = chipText;
+  item.appendChild(main);
+  item.appendChild(chip);
+  item.addEventListener('click', onClick);
+  return item;
+}
+function renderSessions(list) {
+  sessListEl.innerHTML = '';
+  // 顶部固定项：清除钉住，回到"跟随电脑当前会话"（自动挑选，真人输入优先）。
+  sessListEl.appendChild(sessItemRow('跟随电脑当前会话', '由电脑端自动挑选', '自动', '', false, function () { doSwitch(''); }));
+  for (var i = 0; i < list.length; i++) {
+    (function (it) {
+      var title = it.title || '';
+      if (!title) {
+        var parts = String(it.cwd || '').split(/[\\/]/).filter(Boolean);
+        title = (parts.pop() || '会话') + ' · ' + shortSid(it.id);
+      }
+      var sub = '';
+      if (it.createdAt) {
+        var d = new Date(it.createdAt);
+        sub = (d.getMonth() + 1) + '月' + d.getDate() + '日 ' + fmtTimeOf(d) + ' · ';
+      }
+      sub += it.cwd || '';
+      if (it.persisted && !it.live) sub += ' · 未在运行';
+      sessListEl.appendChild(sessItemRow(
+        title, sub, statusLabel(it.status), statusChipCls(it.status), !!it.bound,
+        function () { doSwitch(it.id); },
+      ));
+    })(list[i]);
+  }
+}
+function doSwitch(sid) {
+  closeDrawer();
+  postJSON('/mobile-remote/switch', { token: token, sessionId: sid })
+    .then(function (r) {
+      // 成功时"已切换"提示由 bound 帧送达，这里只兜失败。
+      if (!(r && r.ok)) toast('切换失败：' + ((r && r.message) || '未知错误'));
+    })
+    .catch(function () { toast('网络错误'); });
+}
+
 // ── 连接管理 ─────────────────────────────────────────────────────────────
 function setConn(cls, text) {
   $('connDot').className = cls;
@@ -520,8 +658,10 @@ function connect() {
   });
   es.addEventListener('bound', function (e) {
     var d = JSON.parse(e.data);
+    var isSwitch = d.switched === true;
     setSession(d.sessionId, d.cwd);
-    addSys('已绑定电脑当前会话');
+    if (isSwitch) clearStream(); // 手动切换：清空旧会话的消息流，随后服务器补发新会话近期帧
+    addSys(isSwitch ? ('已切换到会话 ' + shortSid(d.sessionId) + (d.live === false ? '（该会话未在运行，仅显示之后的新事件）' : '')) : '已绑定电脑当前会话');
   });
   es.addEventListener('session', function (e) {
     var d = JSON.parse(e.data);
@@ -571,7 +711,9 @@ streamEl.addEventListener('scroll', function () {
   state.nearBottom = nearBottom();
   if (state.nearBottom) $('newMsg').classList.remove('show');
 });
-$('rebindBtn').addEventListener('click', function () { location.reload(); });
+$('sessionsBtn').addEventListener('click', openDrawer);
+$('drawerClose').addEventListener('click', closeDrawer);
+$('drawerMask').addEventListener('click', closeDrawer);
 $('resumeBtn').addEventListener('click', function () {
   state.noAuto = false;
   $('stoppedBanner').classList.remove('show');
