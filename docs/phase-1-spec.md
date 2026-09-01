@@ -29,7 +29,8 @@
   `exact /mobile-remote/sse` 长连接；`exact /mobile-remote/send`；`exact /mobile-remote/approve/:id`。
 - 会话绑定：`session/event` 的 `subject.header.id` 即会话标识（P4 实测）；首次连接绑定当前
   会话（`payload.agent.session.header.id`），后续流与消息都定向该会话。
-- 事件缓冲：断线期间增量缓存（环形，上限 200 条），重连后补发。
+- 事件缓冲：断线期间增量缓存（环形，上限 200 条），重连后补发；
+  **页面加载/重载时带 `?since=<lastEventId>` 请求补发断档——P5 实测安卓浏览器息屏回前台走「整页重载」而非 SSE 重连，这是主恢复路径（EventSource 的 Last-Event-ID 不覆盖整页重载）。**
 
 ## 前端要点（web/）
 

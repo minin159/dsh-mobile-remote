@@ -84,7 +84,7 @@ mobile-remote（DSH Cordis 插件，独立目录 D:\dsh-plugins\mobile-remote）
 - ~~webServer 不支持 WS/前缀路由 → 降级 SSE + 轮询~~ **P1 已实测：prefix 路由与 WS 均可用；选型定为 SSE + POST（WS 需自实现帧，不采用）。**
 - steer 持续对话有频控/副作用 → **P2 已实测：无频控、无武装要求**；发送节流保留为 UI 防连点（2s）。
 - 手机批准后电脑端仍弹 GUI → **P3 已实测：插件决策即终局，GUI 不弹**；「混合回落」语义保留，超时由插件自实现。
-- 手机连通性（Tailscale 唤醒时延、休眠）→ P5 服务端就绪，手机侧待实测回填；长连接断线自动重连为硬要求（退避 1s→10s）。
+- 手机连通性（Tailscale 唤醒时延、休眠）→ **P5 局域网侧已实测通过**（微信 WebView/Edge 建连 31–183ms、RTT ~25ms）；安卓息屏回前台走整页重载 → 阶段 1 按 `?since=<lastEventId>` 补发设计；Tailscale 侧出门场景补测。
 - **生产 DSH 默认只绑回环** → 阶段 1 部署前提：`dsh web --host 0.0.0.0`。
 - 测试需要用户手机配合：每阶段验收列出手机动作清单。
 
