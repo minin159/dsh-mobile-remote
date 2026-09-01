@@ -69,4 +69,14 @@ mock Cordis ctx 装载插件本体（无需 DSH 宿主），逐路由回归阶�
 node probe/smoke-phase2.mjs   # 期望 26 PASS / 0 FAIL
 ```
 
-阶段 3 开工前先跑一遍，确认基线未破坏。
+## 阶段 5 冒烟测试（smoke-phase5.mjs）
+
+盾牌三档审批链路（自动放行/自动拒绝/回落手机审批）、断线 fail-safe、重连 hello 兜底、
+非法档位 400/错码 401、审计可回溯、页面底栏控件形态断言。运行：
+
+```sh
+node probe/smoke-phase5.mjs   # 期望 19 PASS / 0 FAIL
+```
+
+另有阶段 4 冒烟（smoke-phase4.mjs，27 项：页面真函数 vm 断言）。开新阶段前把
+phase2/4/5 三套都跑一遍，确认基线未破坏。

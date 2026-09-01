@@ -53,7 +53,13 @@ const ROUTE_APPROVE = '/mobile-remote/approve';
 const ROUTE_SESSIONS = '/mobile-remote/sessions';
 const ROUTE_SWITCH = '/mobile-remote/switch';
 const ROUTE_PAIRCHECK = '/mobile-remote/paircheck';
+const ROUTE_SHIELD = '/mobile-remote/shield';
 const ROUTE_PREFIX = '/mobile-remote/';
+
+// 盾牌（阶段 5）：访问权限三档，会话级临时状态（仅存内存，重启/停止远程回到 'ask'）。
+// 'ask' = 手机审批（默认）；'allow-all' = 全部自动放行（高危）；'deny-all' = 全部自动拒绝。
+const SHIELD_MODES = ['ask', 'allow-all', 'deny-all'];
+let shieldMode = 'ask';
 
 const PLUGIN_TAG = '[mobile-remote]';
 
@@ -595,6 +601,11 @@ export function apply(ctx, config) {
     boundSid = null;
     boundCwd = '';
     pinnedSid = null; // 钉住语义随"停止远程"一起清除，下次连接回到自动挑选
+    // 盾牌一并回到手机审批（安全默认）：停止远程后不应残留"全部放行"的自动代答。
+    if (shieldMode !== 'ask') {
+      audit('shield_mode', { mode: 'ask', by: 'stop-remote' });
+      shieldMode = 'ask';
+    }
     if (activeConn) {
       try {
         activeConn.res.write(`event: stopped\ndata: {}\n\n`);
@@ -748,6 +759,18 @@ export function apply(ctx, config) {
       if (!s.enabled || !activeConn) return next();
       const sid = req?.agent?.session?.header?.id ? String(req.agent.session.header.id) : undefined;
       if (!sid || sid !== boundSid) return next(); // 只拦截绑定会话的审批，其余交回电脑端
+      // 盾牌模式（阶段 5）：allow-all/deny-all 时插件直接代答（P3 语义：插件决策即终局，GUI 不弹）。
+      // 生效前提与手机审批一致——插件启用 + 手机在线 + 审批来自绑定会话；任一不满足即回落电脑端（fail-safe）。
+      if (shieldMode !== 'ask') {
+        const outcome = shieldMode === 'allow-all' ? 'allowed-once' : 'rejected';
+        const via = shieldMode === 'allow-all' ? 'shield-allow' : 'shield-deny';
+        const toolName = clip(req?.toolName ?? '未知工具', 80);
+        audit('approval_decide', { id: randomUUID().slice(0, 8), decision: outcome, via, tool: toolName, sid });
+        console.log(PLUGIN_TAG, `盾牌自动${shieldMode === 'allow-all' ? '放行' : '拒绝'} tool=${clip(toolName, 40)}`);
+        // 手机端同步一条提示（复用 approval_result 通道，无 id → 本地无审批条可结算，仅加系统行）
+        sendFrame('approval_result', { id: '', decision: outcome, via });
+        return outcome;
+      }
       if (pendings.size >= PENDING_CAP) {
         console.log(PLUGIN_TAG, '挂起审批过多，交回电脑端');
         return next();
@@ -902,6 +925,7 @@ export function apply(ctx, config) {
       boundSession: boundSid,
       boundStatus: boundSid ? (activity.get(boundSid)?.status || null) : null,
       pinnedSession: pinnedSid,
+      shield: shieldMode, // 盾牌当前档位（设置页状态行同步显示）
       urls: { local, phone, phoneSource },
       lan,
       tailscale,
@@ -1152,6 +1176,7 @@ export function apply(ctx, config) {
             status: boundSid ? (activity.get(boundSid)?.status || 'idle') : null,
             waitSec: clampInt(s.approvalWaitSec, 15, 600, DEFAULTS.approvalWaitSec),
             throttleSec: clampInt(s.sendThrottleSec, 1, 60, DEFAULTS.sendThrottleSec),
+            shield: shieldMode,   // 盾牌当前档位（页面据此渲染盾牌键与红色警示条）
             seq: globalSeq,       // 当前游标：页面无增量时也以此推进 since
             epoch: bootEpoch,     // 服务器重启后页面据此重置游标
           });
@@ -1304,6 +1329,49 @@ export function apply(ctx, config) {
           const decision = parsed.decision === 'allow' ? 'allowed-once' : 'rejected';
           p.settle(decision, 'phone');
           sendJson(res, 200, { ok: true, id, decision });
+        },
+      });
+
+      // 4.5) 盾牌切换（阶段 5）：手机端三档访问权限。会话级临时状态（内存变量），
+      // 不落 settings——插件重启或"停止远程"自动回到手机审批。每次切换写审计 JSONL。
+      reg({
+        kind: 'exact',
+        path: ROUTE_SHIELD,
+        handler: async (req, res) => {
+          if (req.method !== 'POST') {
+            sendJson(res, 405, { ok: false, code: 'method-not-allowed', message: 'POST only' });
+            return;
+          }
+          if (!st().enabled) {
+            sendJson(res, 404, { ok: false, code: 'disabled', message: '远程控制未开启' });
+            return;
+          }
+          let parsed;
+          try {
+            parsed = await readJson(req, 2 * 1024);
+          } catch (error) {
+            sendJson(res, 400, { ok: false, code: 'invalid-request', message: msgOf(error) });
+            return;
+          }
+          const shieldReject = tokenRejectReason(String(parsed.token || ''));
+          if (shieldReject) {
+            sendJson(res, 401, {
+              ok: false,
+              code: shieldReject,
+              message: shieldReject === 'token-expired' ? '配对已过期，请在电脑端重新生成' : '配对码无效',
+            });
+            return;
+          }
+          const mode = String(parsed.mode || '');
+          if (!SHIELD_MODES.includes(mode)) {
+            sendJson(res, 400, { ok: false, code: 'bad-mode', message: 'mode 须为 ask / allow-all / deny-all' });
+            return;
+          }
+          shieldMode = mode;
+          audit('shield_mode', { mode, by: 'phone' });
+          console.log(PLUGIN_TAG, '盾牌切换 →', mode);
+          sendFrame('shield', { mode }); // 当前页面即时同步（重连/重载走 hello 帧兜底）
+          sendJson(res, 200, { ok: true, mode });
         },
       });
 

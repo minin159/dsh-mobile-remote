@@ -186,7 +186,7 @@
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   body.view-chat #actionPill.show { display: block; }
-  /* ── 底部输入区（本阶段不动）───────────────────────────────────────── */
+  /* ── 底部输入区（阶段 5：盾牌 + 上下文只读 + ↑发送；模型/思考键按探针结论隐藏）── */
   #composer {
     display: flex; gap: 8px; align-items: flex-end;
     padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
@@ -197,11 +197,51 @@
     background: var(--bg); color: var(--ink); font: inherit; padding: 9px 12px;
     max-height: 120px; line-height: 1.4;
   }
+  /* 底栏扩展键位（盾牌/上下文）：与输入框同高的方形小按钮 */
+  .barBtn {
+    border: 1px solid var(--line); border-radius: 12px; background: var(--bg);
+    color: var(--ink); font-size: 15px; line-height: 1; padding: 10px 9px; flex-shrink: 0;
+  }
+  .barBtn:active { background: var(--panel); }
+  #ctxBtn { font-size: 12px; font-weight: 600; color: var(--muted); min-width: 52px; }
+  /* 盾牌档位着色：放行=红（危险），拒绝=灰（静默） */
+  #shieldBtn.allow { border-color: var(--bad); color: var(--bad); background: rgba(220,38,38,.12); }
+  #shieldBtn.deny { color: var(--muted); background: rgba(127,127,127,.14); }
   #sendBtn {
     border: 0; border-radius: 12px; background: var(--accent); color: #fff;
-    font-size: 14.5px; font-weight: 600; padding: 10px 16px; flex-shrink: 0;
+    font-size: 16px; font-weight: 600; padding: 10px 14px; flex-shrink: 0;
   }
   #sendBtn:disabled { opacity: .45; }
+  /* 盾牌「全部放行」红色警示条：会话视图内、输入栏上方，常驻 */
+  #shieldBanner {
+    display: none; flex-shrink: 0;
+    background: rgba(220,38,38,.14); color: var(--bad);
+    font-size: 12.5px; font-weight: 600; text-align: center;
+    padding: 7px 12px; border-top: 1px solid rgba(220,38,38,.35);
+  }
+  body.view-chat.shield-allow #shieldBanner { display: block; }
+  /* 盾牌档位选择弹层（底部动作面板） */
+  #shieldSheet {
+    display: none; position: fixed; left: 0; right: 0; bottom: 0; z-index: 45;
+    background: var(--panel); border-top: 1px solid var(--line);
+    border-radius: 14px 14px 0 0; padding: 14px 14px calc(14px + env(safe-area-inset-bottom));
+    box-shadow: 0 -4px 18px rgba(0,0,0,.18);
+  }
+  #shieldSheet.show { display: block; }
+  #shieldSheet h3 { margin: 0 0 10px; font-size: 13.5px; color: var(--muted); font-weight: 600; }
+  .shieldOpt {
+    display: block; width: 100%; text-align: left; margin: 8px 0;
+    border: 1px solid var(--line); border-radius: 10px; background: var(--bg);
+    color: var(--ink); font-size: 14px; padding: 11px 12px;
+  }
+  .shieldOpt small { display: block; color: var(--muted); font-size: 11.5px; margin-top: 2px; }
+  .shieldOpt.cur { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+  .shieldOpt.danger { color: var(--bad); }
+  .shieldOpt.danger small { color: var(--bad); opacity: .8; }
+  #shieldCancel {
+    display: block; width: 100%; margin-top: 10px; border: 0; background: transparent;
+    color: var(--muted); font-size: 13.5px; padding: 9px;
+  }
   #hintBar { text-align: center; font-size: 12px; color: var(--muted); padding: 18px 20px; line-height: 1.7; }
   /* 轻提示 */
   #toast {
@@ -268,13 +308,25 @@
   <div id="homeList"></div>
 </div>
 
-<!-- 会话视图：消息流 + 底部输入栏（输入栏保持阶段 2 现状，五个扩展键位留给阶段 5） -->
+<!-- 会话视图：消息流 + 底栏控制条（阶段 5：盾牌 · 上下文只读 · ↑发送；模型/思考键隐藏） -->
 <div id="chatView">
   <main id="stream"></main>
+  <div id="shieldBanner">⚠ 盾牌：全部放行——工具操作将自动允许，不再询问</div>
   <footer id="composer">
     <textarea id="input" rows="1" placeholder="发消息给当前会话…"></textarea>
-    <button id="sendBtn">发送</button>
+    <button id="shieldBtn" class="barBtn" aria-label="权限模式">🛡</button>
+    <button id="ctxBtn" class="barBtn" aria-label="上下文用量">◐ —</button>
+    <button id="sendBtn" aria-label="发送">↑</button>
   </footer>
+</div>
+
+<!-- 盾牌档位选择弹层 -->
+<div id="shieldSheet">
+  <h3>访问权限模式</h3>
+  <button id="optAsk" class="shieldOpt" data-mode="ask">🛡 手机审批<small>每个操作推送到手机确认（默认）</small></button>
+  <button id="optAllowAll" class="shieldOpt danger" data-mode="allow-all">✅ 全部放行<small>危险：所有操作自动允许，无需任何确认</small></button>
+  <button id="optDenyAll" class="shieldOpt" data-mode="deny-all">⛔ 全部拒绝<small>所有操作自动拒绝，会话只读</small></button>
+  <button id="shieldCancel">取消</button>
 </div>
 
 <button id="newMsg" aria-label="回到底部">↓</button>
@@ -318,6 +370,9 @@ var state = {
   foldMap: {},               // 折叠的工作区 cwd → true（localStorage 持久化）
   lastHomeFetch: 0,          // 首页数据节流（3s）
   lastAction: null,          // 最新 tool/call 摘要（当前动作 pill）
+  // ── 阶段 5：底栏运行时控件 ──
+  shield: 'ask',             // 盾牌档位：ask | allow-all | deny-all（服务器为事实源，hello/shield 帧同步）
+  ctx: null,                 // 最近一轮用量 {pressure, rate, out}（◐ 只读展示，来自 assistant/message.usage）
 };
 // 游标持久化：安卓息屏回前台走整页重载（P5 实测），靠 sessionStorage 带回断点与视图。
 try {
@@ -487,6 +542,8 @@ function handleSession(ev) {
     case 'assistant/message': {
       var finalText = contentText(data.message && data.message.content);
       finishStreaming(data.turn, data.step, finalText);
+      // ◐ 上下文只读展示（P7 探针：usage 挂在 assistant/message，含缓存命中字段）
+      if (data.usage && typeof data.usage.inputTokens === 'number') updateCtx(data.usage);
       break;
     }
     case 'tool/call':
@@ -866,6 +923,68 @@ function refreshSendBtn() {
     sendBtn.disabled = false;
   }
 }
+// ── 阶段 5：底栏运行时控件 ────────────────────────────────────────────────
+// 盾牌（权限模式）三档：ask=手机审批（默认）/ allow-all=全部放行（高危）/ deny-all=全部拒绝。
+// 服务器为事实源：POST /shield 切换，hello/shield 帧同步；全部放行时红色警示条常驻。
+var shieldBtn = $('shieldBtn');
+var ctxBtn = $('ctxBtn');
+var shieldSheet = $('shieldSheet');
+function shieldLabel(mode) {
+  if (mode === 'allow-all') return '全部放行';
+  if (mode === 'deny-all') return '全部拒绝';
+  return '手机审批';
+}
+function applyShield(mode) {
+  state.shield = mode === 'allow-all' || mode === 'deny-all' ? mode : 'ask';
+  document.body.classList.toggle('shield-allow', state.shield === 'allow-all');
+  shieldBtn.className = 'barBtn'
+    + (state.shield === 'allow-all' ? ' allow' : state.shield === 'deny-all' ? ' deny' : '');
+}
+shieldBtn.addEventListener('click', markShieldOpts);
+function markShieldOpts() {
+  // 当前档位高亮（按 id 绑定，不依赖 querySelectorAll）
+  $('optAsk').classList.toggle('cur', state.shield === 'ask');
+  $('optAllowAll').classList.toggle('cur', state.shield === 'allow-all');
+  $('optDenyAll').classList.toggle('cur', state.shield === 'deny-all');
+  shieldSheet.classList.add('show');
+}
+$('shieldCancel').addEventListener('click', function () { shieldSheet.classList.remove('show'); });
+function pickShield(mode) {
+  shieldSheet.classList.remove('show');
+  if (mode === state.shield) return;
+  // 高危档二次确认，防误触
+  if (mode === 'allow-all' && !window.confirm('确定切到「全部放行」？所有工具操作将不再询问直接执行。')) return;
+  postJSON('/mobile-remote/shield', { token: token, mode: mode })
+    .then(function (r) {
+      if (handleAuthCode(r && r.code)) return;
+      if (r && r.ok) { applyShield(r.mode); toast('权限模式：' + shieldLabel(r.mode)); }
+      else toast('切换失败：' + ((r && r.message) || '未知错误'));
+    })
+    .catch(function () { toast('网络错误'); });
+}
+$('optAsk').addEventListener('click', function () { pickShield('ask'); });
+$('optAllowAll').addEventListener('click', function () { pickShield('allow-all'); });
+$('optDenyAll').addEventListener('click', function () { pickShield('deny-all'); });
+// ◐ 上下文/缓存只读展示（P7 证实数据在既有 SSE 流上，故只做最小只读态；
+// 完整展开控件与投影查询留待后续按需再开）。口径与宿主 contextPressure 同源：
+// 占用 ≈ input + cacheRead + cacheWrite；命中率 = cacheRead / 三者和。
+function fmtTok(n) {
+  if (!n) return '0';
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+  if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
+  return String(n);
+}
+function updateCtx(u) {
+  var pressure = (u.inputTokens || 0) + (u.cacheReadTokens || 0) + (u.cacheWriteTokens || 0);
+  var rate = pressure ? Math.round(((u.cacheReadTokens || 0) / pressure) * 100) : 0;
+  state.ctx = { pressure: pressure, rate: rate, out: u.outputTokens || 0 };
+  ctxBtn.textContent = '◐ ' + fmtTok(pressure) + (rate ? '·' + rate + '%' : '');
+}
+ctxBtn.addEventListener('click', function () {
+  var c = state.ctx;
+  if (!c) { toast('暂无用量数据，等一轮回复后显示'); return; }
+  toast('上下文≈' + fmtTok(c.pressure) + ' tok · 缓存命中 ' + c.rate + '% · 上轮输出 ' + fmtTok(c.out));
+});
 function postJSON(path, body) {
   return fetch(path, {
     method: 'POST',
@@ -1211,6 +1330,7 @@ function connect() {
     var d = JSON.parse(e.data);
     state.throttleSec = d.throttleSec || 2;
     state.waitSec = d.waitSec || 120;
+    applyShield(d.shield || 'ask'); // 盾牌档位以服务器为准（重连/重载兜底同步）
     // 服务器重启（epoch 变化）→ 全局事件号已归零，旧游标作废。
     if (state.epoch && d.epoch && state.epoch !== d.epoch) state.seq = 0;
     state.epoch = d.epoch || state.epoch;
@@ -1253,6 +1373,13 @@ function connect() {
     settleApprovalLocal(d.id);
     if (d.via === 'timeout') { addSys('⏱ 审批超时，已转回电脑端'); toast('审批超时，转回电脑端'); }
     if (d.via === 'stop' || d.via === 'disconnect') addSys('⛔ 审批已中断（' + d.via + '）');
+    // 盾牌自动代答（无 id，仅系统行提示；P3 语义：插件决策即终局）
+    if (d.via === 'shield-allow') addSys('🛡 盾牌已自动放行');
+    if (d.via === 'shield-deny') addSys('🛡 盾牌已自动拒绝');
+  });
+  // 盾牌档位变化（手机端切换后服务器的确认广播）
+  es.addEventListener('shield', function (e) {
+    applyShield(JSON.parse(e.data).mode);
   });
   es.addEventListener('replaced', function () {
     state.noAuto = true;

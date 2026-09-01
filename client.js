@@ -2343,6 +2343,8 @@ window.__ModuleLoader__.load({
         boundSession: typeof json.boundSession === 'string' ? json.boundSession : null,
         boundStatus: typeof json.boundStatus === 'string' ? json.boundStatus : null,
         pinnedSession: typeof json.pinnedSession === 'string' ? json.pinnedSession : null,
+        // 盾牌档位（手机端切换，会话级临时状态）：ask | allow-all | deny-all
+        shield: json.shield === 'allow-all' || json.shield === 'deny-all' ? json.shield : 'ask',
         urls: json.urls || { local: '', phone: '', phoneSource: '' },
         lan: Array.isArray(json.lan) ? json.lan : [],
         tailscale: Array.isArray(json.tailscale) ? json.tailscale : [],
@@ -2368,6 +2370,12 @@ window.__ModuleLoader__.load({
       if (st === 'done') return '完成'
       if (st === 'error') return '错误'
       return '空闲'
+    }
+    // 盾牌档位标签（与手机端一致；allow-all 高危红色在行内样式处理）。
+    function shieldText(mode) {
+      if (mode === 'allow-all') return '⚠ 全部放行'
+      if (mode === 'deny-all') return '全部拒绝'
+      return '手机审批'
     }
     // 配对有效期档位标签（0 = 不过期）。
     function ttlLabel(hours) {
@@ -2661,6 +2669,10 @@ window.__ModuleLoader__.load({
                   : '未绑定会话',
                   h('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary, rgba(127,127,127,0.7))' } },
                     model.active > 0 ? '📱 已连接 ' + model.active + ' 台' : '无手机连接')),
+                // 盾牌档位同步显示（手机端切换，只读；重启/停止远程回到手机审批）
+                row('权限模式（盾牌）', '手机端底栏切换，会话级临时档位；重启或停止远程后回到手机审批',
+                  h('span', { style: { fontSize: '12px', fontWeight: 600, color: model.shield === 'allow-all' ? 'var(--dsw-alias-color-error, #dc2626)' : 'var(--dsw-alias-label-tertiary, rgba(127,127,127,0.7))' } },
+                    shieldText(model.shield))),
                 // 操作按钮
                 h('div', { style: { display: 'flex', gap: '10px', justifyContent: 'center', marginTop: '10px' } },
                   h('button', {
