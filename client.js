@@ -2332,6 +2332,9 @@ window.__ModuleLoader__.load({
         approvalWaitSec: typeof json.approvalWaitSec === 'number' ? json.approvalWaitSec : 120,
         sendThrottleSec: typeof json.sendThrottleSec === 'number' ? json.sendThrottleSec : 2,
         relayPort: typeof json.relayPort === 'number' ? json.relayPort : 3090,
+        pairTtlHours: typeof json.pairTtlHours === 'number' ? json.pairTtlHours : 72,
+        tokenIssuedAt: typeof json.tokenIssuedAt === 'string' ? json.tokenIssuedAt : '',
+        pairingExpired: json.pairingExpired === true,
         relayRunning: json.relayRunning === true,
         relayError: typeof json.relayError === 'string' ? json.relayError : '',
         active: typeof json.active === 'number' ? json.active : 0,
@@ -2363,6 +2366,12 @@ window.__ModuleLoader__.load({
       if (st === 'done') return '完成'
       if (st === 'error') return '错误'
       return '空闲'
+    }
+    // 配对有效期档位标签（0 = 不过期）。
+    function ttlLabel(hours) {
+      var n = Number(hours) || 0
+      if (!n) return '不过期'
+      return n < 24 ? (n + ' 小时') : (n / 24) + ' 天'
     }
 
     // 复制到剪贴板：localhost 是安全上下文，优先 clipboard API，兜底 execCommand。
@@ -2569,6 +2578,8 @@ window.__ModuleLoader__.load({
               ),
               error ? h('div', { style: { color: 'var(--dsw-alias-label-error, #E54D4D)', fontSize: '12px', marginTop: '6px' } }, error) : null,
               okMsg ? h('div', { style: { color: 'var(--dsw-alias-label-success, #3AA76D)', fontSize: '12px', marginTop: '6px' } }, okMsg) : null,
+              model.pairingExpired ? h('div', { style: { color: 'var(--dsw-alias-label-error, #E54D4D)', fontSize: '12px', marginTop: '6px' } },
+                '⚠ 配对码已过期：手机端已无法连接，请「重置配对码」重新生成。') : null,
               model.enabled ? h('div', null,
                 // 配对二维码
                 h('div', { style: { display: 'flex', justifyContent: 'center', padding: '12px 0 4px' } },
@@ -2622,6 +2633,18 @@ window.__ModuleLoader__.load({
                     patch({ sendThrottleSec: order[(order.indexOf(cur) + 1) % order.length] })
                   },
                 }, model.sendThrottleSec + ' 秒')),
+                row('配对有效期',
+                  model.tokenIssuedAt
+                    ? ('签发于 ' + new Date(model.tokenIssuedAt).toLocaleString() + '，过期需重新生成')
+                    : '过期需电脑端重新生成配对码',
+                  h('button', {
+                    style: cyclerStyle(true),
+                    onClick: function () {
+                      var order = [0, 24, 72, 168]
+                      var idx = order.indexOf(model.pairTtlHours)
+                      patch({ pairTtlHours: order[(idx + 1) % order.length] })
+                    },
+                  }, ttlLabel(model.pairTtlHours))),
                 row('当前状态', model.boundSession
                   ? ('会话 ' + model.boundSession.replace(/^session-/, '').slice(0, 8)
                     + (model.boundStatus ? ' · ' + statusText(model.boundStatus) : '')

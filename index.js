@@ -18,6 +18,7 @@
  *   exact  /mobile-remote/approve   手机审批（POST {token,id,decision}）
  *   exact  /mobile-remote/sessions  会话列表（阶段 2，GET ?token=）
  *   exact  /mobile-remote/switch    切换绑定会话（阶段 2，POST {token,sessionId}）
+ *   exact  /mobile-remote/paircheck 配对状态探测（阶段 2，GET ?token=，供页面判失效原因）
  *   prefix /mobile-remote/          移动端单页（/p/<token>，token 即路径段，错码 401）
  *
  * 安全模型：
@@ -50,6 +51,7 @@ const ROUTE_SEND = '/mobile-remote/send';
 const ROUTE_APPROVE = '/mobile-remote/approve';
 const ROUTE_SESSIONS = '/mobile-remote/sessions';
 const ROUTE_SWITCH = '/mobile-remote/switch';
+const ROUTE_PAIRCHECK = '/mobile-remote/paircheck';
 const ROUTE_PREFIX = '/mobile-remote/';
 
 const PLUGIN_TAG = '[mobile-remote]';
@@ -62,6 +64,7 @@ const DEFAULTS = {
   approvalWaitSec: 120, // 手机审批等待窗口；超时 next() 回落电脑端 GUI
   sendThrottleSec: 2,   // 发送节流（防连点，UI 同步用）
   relayPort: 3090,      // 手机中继监听端口（0.0.0.0）；DSH web 本体保持回环
+  pairTtlHours: 72,     // 配对码有效期（小时）；0 = 不过期。过期需电脑端重新生成（对齐 ZCode 语义）
 };
 
 /** 环形缓冲上限：每会话缓存最近 200 条转发帧，供断线/整页重载/切换会话后补发。 */
@@ -222,6 +225,9 @@ export function apply(ctx, config) {
       // 空 = 设置页用自动探测的局域网地址 + 中继端口拼配对链接。
       publicBase: z.string().default(typeof s.publicBase === 'string' ? s.publicBase.trim().replace(/\/+$/, '') : DEFAULTS.publicBase),
       token: z.string().default(typeof s.token === 'string' ? s.token : DEFAULTS.token), // 配对码即密码；首次启用自动生成
+      // 配对码签发时间（ISO 字符串）：有效期判定依据；旧版本升级后首次启动回填。
+      tokenIssuedAt: z.string().default(typeof s.tokenIssuedAt === 'string' ? s.tokenIssuedAt : ''),
+      pairTtlHours: z.number().default(clampInt(s.pairTtlHours, 0, 8760, DEFAULTS.pairTtlHours)),
       approvalWaitSec: z.number().default(clampInt(s.approvalWaitSec, 15, 600, DEFAULTS.approvalWaitSec)),
       sendThrottleSec: z.number().default(clampInt(s.sendThrottleSec, 1, 60, DEFAULTS.sendThrottleSec)),
       // 手机中继端口：DSH web CLI 封禁 --host 0.0.0.0（宿主安全策略，实测 dsh-web-app
@@ -236,6 +242,8 @@ export function apply(ctx, config) {
     ...DEFAULTS,
     publicBase: typeof seed.publicBase === 'string' ? seed.publicBase.trim().replace(/\/+$/, '') : DEFAULTS.publicBase,
     token: typeof seed.token === 'string' ? seed.token : DEFAULTS.token,
+    tokenIssuedAt: typeof seed.tokenIssuedAt === 'string' ? seed.tokenIssuedAt : '',
+    pairTtlHours: clampInt(seed.pairTtlHours, 0, 8760, DEFAULTS.pairTtlHours),
     approvalWaitSec: clampInt(seed.approvalWaitSec, 15, 600, DEFAULTS.approvalWaitSec),
     sendThrottleSec: clampInt(seed.sendThrottleSec, 1, 60, DEFAULTS.sendThrottleSec),
     relayPort: clampInt(seed.relayPort, 0, 65535, DEFAULTS.relayPort),
@@ -430,11 +438,31 @@ export function apply(ctx, config) {
     if (cur.token) return;
     try {
       const token = generateToken();
-      await settingsHandle.update({ token });
+      await settingsHandle.update({ token, tokenIssuedAt: new Date().toISOString() });
       console.log(PLUGIN_TAG, '首次启用：已生成配对码', maskToken(st().token));
     } catch (error) {
       console.error(PLUGIN_TAG, '配对码生成失败:', msgOf(error));
     }
+  }
+
+  /** 配对码是否已过有效期（pairTtlHours=0 表示不过期；无签发时间的旧码视为长期有效）。 */
+  function pairingExpired() {
+    const ttl = clampInt(st().pairTtlHours, 0, 8760, DEFAULTS.pairTtlHours);
+    if (!ttl) return false;
+    const issued = Date.parse(String(st().tokenIssuedAt || ''));
+    if (!issued) return false;
+    return Date.now() > issued + ttl * 3600 * 1000;
+  }
+
+  /**
+   * 配对校验统一入口：返回 null = 通过，否则为失效原因码。
+   * 'bad-token' 配对码错误；'token-expired' 已过期（需电脑端重新生成，对齐 ZCode 语义）。
+   * 各路由 401 响应的 code 字段即该原因码，手机页面据此给出对应的失效文案。
+   */
+  function tokenRejectReason(candidate) {
+    if (!tokenOk(candidate)) return 'bad-token';
+    if (pairingExpired()) return 'token-expired';
+    return null;
   }
 
   // ── 会话选择与绑定 ───────────────────────────────────────────────────────
@@ -802,6 +830,9 @@ export function apply(ctx, config) {
       approvalWaitSec: clampInt(s.approvalWaitSec, 15, 600, DEFAULTS.approvalWaitSec),
       sendThrottleSec: clampInt(s.sendThrottleSec, 1, 60, DEFAULTS.sendThrottleSec),
       relayPort,
+      pairTtlHours: clampInt(s.pairTtlHours, 0, 8760, DEFAULTS.pairTtlHours),
+      tokenIssuedAt: typeof s.tokenIssuedAt === 'string' ? s.tokenIssuedAt : '',
+      pairingExpired: pairingExpired(),
       relayRunning: Boolean(relayServer),
       relayError,
       active: activeConn ? 1 : 0,
@@ -941,7 +972,11 @@ export function apply(ctx, config) {
           if (typeof parsed.enabled === 'boolean') patch.enabled = parsed.enabled;
           if (parsed.resetToken === true) {
             patch.token = generateToken();
+            patch.tokenIssuedAt = new Date().toISOString(); // 重新生成即重新起算有效期
             stopRequested = true; // 旧配对链接立即失效
+          }
+          if (Number.isSafeInteger(parsed.pairTtlHours) && parsed.pairTtlHours >= 0 && parsed.pairTtlHours <= 8760) {
+            patch.pairTtlHours = parsed.pairTtlHours;
           }
           if (parsed.stop === true) stopRequested = true;
           if (typeof parsed.publicBase === 'string') {
@@ -984,9 +1019,14 @@ export function apply(ctx, config) {
             return;
           }
           ensureRelay(); // 中继自愈（进程内异常重启后第一条请求即恢复）
-          if (!tokenOk(url.searchParams.get('token') || '')) {
-            console.log(PLUGIN_TAG, 'SSE 鉴权失败（配对码不匹配）');
-            sendJson(res, 401, { ok: false, code: 'bad-token', message: '配对码无效' });
+          const sseReject = tokenRejectReason(url.searchParams.get('token') || '');
+          if (sseReject) {
+            console.log(PLUGIN_TAG, 'SSE 鉴权失败（' + sseReject + '）');
+            sendJson(res, 401, {
+              ok: false,
+              code: sseReject,
+              message: sseReject === 'token-expired' ? '配对已过期，请在电脑端重新生成' : '配对码无效',
+            });
             return;
           }
           const sinceRaw = url.searchParams.get('since');
@@ -1092,8 +1132,13 @@ export function apply(ctx, config) {
             sendJson(res, 400, { ok: false, code: 'invalid-request', message: msgOf(error) });
             return;
           }
-          if (!tokenOk(String(parsed.token || ''))) {
-            sendJson(res, 401, { ok: false, code: 'bad-token', message: '配对码无效' });
+          const sendReject = tokenRejectReason(String(parsed.token || ''));
+          if (sendReject) {
+            sendJson(res, 401, {
+              ok: false,
+              code: sendReject,
+              message: sendReject === 'token-expired' ? '配对已过期，请在电脑端重新生成' : '配对码无效',
+            });
             return;
           }
           if (!boundSid) {
@@ -1158,8 +1203,13 @@ export function apply(ctx, config) {
             sendJson(res, 400, { ok: false, code: 'invalid-request', message: msgOf(error) });
             return;
           }
-          if (!tokenOk(String(parsed.token || ''))) {
-            sendJson(res, 401, { ok: false, code: 'bad-token', message: '配对码无效' });
+          const approveReject = tokenRejectReason(String(parsed.token || ''));
+          if (approveReject) {
+            sendJson(res, 401, {
+              ok: false,
+              code: approveReject,
+              message: approveReject === 'token-expired' ? '配对已过期，请在电脑端重新生成' : '配对码无效',
+            });
             return;
           }
           const id = String(parsed.id || '');
@@ -1189,8 +1239,13 @@ export function apply(ctx, config) {
           }
           ensureRelay(); // 中继自愈
           const url = new URL(req.url, 'http://x');
-          if (!tokenOk(url.searchParams.get('token') || '')) {
-            sendJson(res, 401, { ok: false, code: 'bad-token', message: '配对码无效' });
+          const sessReject = tokenRejectReason(url.searchParams.get('token') || '');
+          if (sessReject) {
+            sendJson(res, 401, {
+              ok: false,
+              code: sessReject,
+              message: sessReject === 'token-expired' ? '配对已过期，请在电脑端重新生成' : '配对码无效',
+            });
             return;
           }
           const sessions = await listSessionsView();
@@ -1219,8 +1274,13 @@ export function apply(ctx, config) {
             sendJson(res, 400, { ok: false, code: 'invalid-request', message: msgOf(error) });
             return;
           }
-          if (!tokenOk(String(parsed.token || ''))) {
-            sendJson(res, 401, { ok: false, code: 'bad-token', message: '配对码无效' });
+          const switchReject = tokenRejectReason(String(parsed.token || ''));
+          if (switchReject) {
+            sendJson(res, 401, {
+              ok: false,
+              code: switchReject,
+              message: switchReject === 'token-expired' ? '配对已过期，请在电脑端重新生成' : '配对码无效',
+            });
             return;
           }
           const sid = typeof parsed.sessionId === 'string' ? parsed.sessionId.trim() : '';
@@ -1288,7 +1348,27 @@ export function apply(ctx, config) {
         },
       });
 
-      // 7) 移动端单页：/mobile-remote/p/<token>，token 即路径段，错码 401。
+      // 7) 配对状态探测（阶段 2）：SSE 断开后页面先问一次失效原因——EventSource
+      //    拿不到 HTTP 状态码，401 body 只在主动 POST 时可见，这里给页面一个裁决口。
+      reg({
+        kind: 'exact',
+        path: ROUTE_PAIRCHECK,
+        handler: async (req, res) => {
+          const url = new URL(req.url, 'http://x');
+          const reject = tokenRejectReason(url.searchParams.get('token') || '');
+          if (reject) {
+            sendJson(res, 401, {
+              ok: false,
+              code: reject,
+              message: reject === 'token-expired' ? '配对已过期，请在电脑端重新生成' : '配对码无效',
+            });
+            return;
+          }
+          sendJson(res, 200, { ok: true });
+        },
+      });
+
+      // 8) 移动端单页：/mobile-remote/p/<token>，token 即路径段，错码 401。
       // 注意宿主 prefix 匹配是 pathname.startsWith(path + '/')（P1 实测），
       // 注册路径不能带尾斜杠，否则变成 /mobile-remote// 永不匹配。
       reg({
@@ -1313,9 +1393,12 @@ export function apply(ctx, config) {
             sendHtml(res, 404, errorPage('缺少配对码', '请通过电脑端设置页的二维码或链接打开本页。'));
             return;
           }
-          if (!tokenOk(m[1])) {
-            console.log(PLUGIN_TAG, '页面鉴权失败 path=' + logPath);
-            sendHtml(res, 401, errorPage('配对码无效', '链接已失效或配对码已重置。请在电脑端设置页重新复制链接。'));
+          const pageReject = tokenRejectReason(m[1]);
+          if (pageReject) {
+            console.log(PLUGIN_TAG, '页面鉴权失败 path=' + logPath + ' (' + pageReject + ')');
+            sendHtml(res, 401, pageReject === 'token-expired'
+              ? errorPage('配对已过期', '配对码超过有效期。请在电脑端「移动端远程」设置页重新生成配对码，再用新二维码/链接打开。')
+              : errorPage('配对码无效', '链接已失效或配对码已重置。请在电脑端设置页重新复制链接。'));
             return;
           }
           console.log(PLUGIN_TAG, '页面已下发 path=' + logPath);
@@ -1373,6 +1456,18 @@ export function apply(ctx, config) {
   // 启动日志：token 打码；publicBase 是否配置只报有无，不回显全文。
   void ready.then(() => {
     ensureToken(); // 已配置过 token 则幂等跳过
+    // 旧版本升级兼容：已有配对码但没有签发时间 → 回填为当下（有效期重新起算）。
+    void (async () => {
+      try {
+        const cur = st();
+        if (cur.token && !cur.tokenIssuedAt && settingsHandle) {
+          await settingsHandle.update({ tokenIssuedAt: new Date().toISOString() });
+          console.log(PLUGIN_TAG, '已回填配对码签发时间（升级兼容）');
+        }
+      } catch (error) {
+        console.error(PLUGIN_TAG, '配对码签发时间回填失败:', msgOf(error));
+      }
+    })();
     ensureRelay(); // 开机已是启用态则直接拉起中继
     const s = st();
     console.log(PLUGIN_TAG, `ready; enabled=${s.enabled} token=${maskToken(s.token)}`

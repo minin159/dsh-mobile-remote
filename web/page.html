@@ -162,6 +162,10 @@
   <span>本页面已在其他设备打开，连接被顶替</span>
   <button id="takeoverBtn">夺回连接</button>
 </div>
+<div id="pairBanner" class="banner">
+  <span id="pairBannerText"></span>
+  <button id="pairRetryBtn">我已在电脑端处理</button>
+</div>
 
 <div id="drawerMask"></div>
 <div id="drawer">
@@ -455,6 +459,7 @@ function answerApproval(decision) {
   $('apReject').disabled = true;
   postJSON('/mobile-remote/approve', { token: token, id: d.id, decision: decision })
     .then(function (r) {
+      if (handleAuthCode(r && r.code)) { renderApproval(); return; } // 配对失效：审批条还原，保留待处理
       if (r && r.ok) toast(decision === 'allow' ? '已允许 ✓' : '已拒绝 ⛔');
       else toast('操作失败：' + ((r && r.message) || '未知错误'));
       settleApprovalLocal(d.id); // 结果确认帧到达前先乐观收起
@@ -485,6 +490,7 @@ function send() {
   sendBtn.disabled = true;
   postJSON('/mobile-remote/send', { token: token, text: text })
     .then(function (r) {
+      if (handleAuthCode(r && r.code)) return;
       if (r && r.ok) {
         inputEl.value = '';
         inputEl.style.height = 'auto';
@@ -535,6 +541,7 @@ function openDrawer() {
   fetch('/mobile-remote/sessions?token=' + encodeURIComponent(token))
     .then(function (r) { return r.json(); })
     .then(function (d) {
+      if (handleAuthCode(d && d.code)) { closeDrawer(); return; }
       if (d && d.ok) renderSessions(d.sessions || []);
       else { closeDrawer(); toast('会话列表加载失败：' + ((d && d.message) || '未知错误')); }
     })
@@ -614,6 +621,7 @@ function doSwitch(sid) {
   postJSON('/mobile-remote/switch', { token: token, sessionId: sid })
     .then(function (r) {
       // 成功时"已切换"提示由 bound 帧送达，这里只兜失败。
+      if (handleAuthCode(r && r.code)) return;
       if (!(r && r.ok)) toast('切换失败：' + ((r && r.message) || '未知错误'));
     })
     .catch(function () { toast('网络错误'); });
@@ -645,6 +653,29 @@ function setSession(sid, cwd) {
   state.sessionId = sid || null;
   var short = sid ? String(sid).replace(/^session-/, '').slice(0, 8) : null;
   $('connText').textContent = (short ? '会话 ' + short : '等待电脑端会话…') + (cwd ? ' · ' + cwd : '');
+}
+
+// ── 配对失效处理（阶段 2，对齐 ZCode：过期需电脑端重新生成）──────────────
+function retryConnect() {
+  setConn('bad', '连接断开，' + Math.round(state.backoff / 1000) + 's 后重连');
+  var wait = state.backoff;
+  state.backoff = Math.min(state.backoff * 2, 10000);
+  setTimeout(connect, wait);
+}
+/** 配对失效（过期/被重置）：停掉自动重连，展示原因与重新配对指引。 */
+function pairFailed(code) {
+  state.noAuto = true;
+  if (state.es) { try { state.es.close(); } catch (e) {} }
+  setConn('bad', code === 'token-expired' ? '配对已过期' : '配对码无效');
+  $('pairBannerText').textContent = code === 'token-expired'
+    ? '配对已过期：请在电脑端「移动端远程」设置页重新生成配对码，再用新二维码/链接打开本页。'
+    : '配对码无效：链接已失效或已被重置。请在电脑端重新生成配对码后，用新链接打开本页。';
+  $('pairBanner').classList.add('show');
+}
+/** POST 响应里的失效原因码 → 统一转入失效横幅；返回 true 表示已处理。 */
+function handleAuthCode(code) {
+  if (code === 'bad-token' || code === 'token-expired') { pairFailed(code); return true; }
+  return false;
 }
 
 function connect() {
@@ -710,12 +741,17 @@ function connect() {
     $('stoppedBanner').classList.add('show');
   });
   es.addEventListener('error', function () {
-    setConn('bad', '连接断开，' + Math.round(state.backoff / 1000) + 's 后重连');
     es.close();
-    if (state.noAuto) return;
-    var wait = state.backoff;
-    state.backoff = Math.min(state.backoff * 2, 10000);
-    setTimeout(connect, wait);
+    if (state.noAuto) { setConn('bad', '连接未恢复'); return; }
+    // 先探测配对状态：已过期/被重置则停住并指引重新配对；探测不通
+    // （网络断、服务器重启）才走指数退避重连。
+    fetch('/mobile-remote/paircheck?token=' + encodeURIComponent(token))
+      .then(function (r) { return r.json().catch(function () { return { ok: r.ok }; }); })
+      .then(function (d) {
+        if (d && d.ok === false && (d.code === 'bad-token' || d.code === 'token-expired')) pairFailed(d.code);
+        else retryConnect();
+      })
+      .catch(function () { retryConnect(); });
   });
 }
 $('newMsg').addEventListener('click', function () {
@@ -737,6 +773,12 @@ $('resumeBtn').addEventListener('click', function () {
 $('takeoverBtn').addEventListener('click', function () {
   state.noAuto = false;
   $('replacedBanner').classList.remove('show');
+  connect();
+});
+$('pairRetryBtn').addEventListener('click', function () {
+  state.noAuto = false;
+  $('pairBanner').classList.remove('show');
+  state.backoff = 1000;
   connect();
 });
 // 回前台立即检查连接（部分浏览器不触发 EventSource 自动重连）。
