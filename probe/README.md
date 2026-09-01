@@ -37,3 +37,15 @@ MOBILE_REMOTE_PROBE_MODE=p2 ... --profile probe "请调用 probe_p2 工具一次
 
 服务：`node probe/p5-server.mjs`（后台），地址见 `results/p5-urls.txt`。
 清单原文见 `docs/probe-findings.md` 的 P5 节。
+
+## 阶段 2 冒烟测试（smoke-phase2.mjs）
+
+mock Cordis ctx 装载插件本体（无需 DSH 宿主），逐路由回归阶段 2 链路：
+页面/配对（含过期）/sessions/switch/SSE 补发/状态帧/send 全链路（stub dsh-llm）/
+审计 JSONL/停用零影响。运行：
+
+```sh
+node probe/smoke-phase2.mjs   # 期望 26 PASS / 0 FAIL
+```
+
+阶段 3 开工前先跑一遍，确认基线未破坏。
