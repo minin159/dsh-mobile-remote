@@ -983,11 +983,14 @@ export function apply(ctx, config) {
         }
       }
     }
-    // 4) 合并运行态（activity）与绑定标记；上限 100 条（手机抽屉用不了更多）。
+    // 4) 合并运行态（activity）与绑定标记；上限 100 条（手机列表用不了更多）。
     for (const it of out) {
       const a = activity.get(it.id);
       it.status = a?.status || (it.live ? 'idle' : 'ended');
       it.humanAt = a?.humanAt || 0;
+      // 最近活动时间（阶段 4 首页卡片"最近更新"展示用）：插件启动后该会话最近一次
+      // 事件的时刻；无记录（旧会话/刚重启）时由前端回退到 createdAt。
+      it.lastAt = a?.lastAt || 0;
       it.bound = it.id === boundSid;
     }
     if (out.length > 100) out.length = 100;
