@@ -407,7 +407,20 @@ export function apply(ctx, config) {
     return { frame, seq };
   }
 
-  /** 向当前活动连接写一帧；连接已死则静默。 */
+  /** 连接写失败（半开/已死）：立即拆除并腾出活动连接位，让挂起审批及时回落。 */
+  function handleDeadConn(conn) {
+    if (conn.dead) return;
+    conn.dead = true;
+    if (activeConn === conn) {
+      activeConn = null;
+      console.log(PLUGIN_TAG, `SSE 连接写失败，视为断开 #${conn.id}`);
+      audit('disconnect', { conn: conn.id, sid: boundSid, via: 'write-error', durMs: conn.startedAt ? Date.now() - conn.startedAt : 0 });
+      scheduleApprovalFallback();
+    }
+    teardownConn(conn);
+  }
+
+  /** 向当前活动连接写一帧；写失败视为连接已死，立即拆除（阶段 2 半开检测）。 */
   function sendFrame(eventName, data, withId) {
     const conn = activeConn;
     if (!conn) return false;
@@ -416,6 +429,7 @@ export function apply(ctx, config) {
       conn.res.write(`${idPart}event: ${eventName}\ndata: ${JSON.stringify(data)}\n\n`);
       return true;
     } catch {
+      handleDeadConn(conn);
       return false;
     }
   }
@@ -614,6 +628,7 @@ export function apply(ctx, config) {
   }
 
   function teardownConn(conn) {
+    conn.dead = true;
     if (conn.heartbeat) clearInterval(conn.heartbeat);
     try { conn.res.end(); } catch {}
   }
@@ -651,8 +666,12 @@ export function apply(ctx, config) {
       }
       const { frame, seq } = buildSessionFrame(sid, type, event?.data ?? {});
       if (activeConn && isBound) {
-        try { activeConn.res.write(frame); } catch {} // 直发完整帧
-        activeConn.cursorBySid.set(sid, seq);         // 连接级会话游标：切换补发去重
+        try {
+          activeConn.res.write(frame);          // 直发完整帧
+          activeConn.cursorBySid.set(sid, seq); // 连接级会话游标：切换补发去重
+        } catch {
+          handleDeadConn(activeConn);           // 写失败：半开连接立即拆除
+        }
       }
       // 审计事件顺带驱动挂起审批的对账（防御：正常路径由手机 POST 先行 settle）。
       if (type === 'approval/decided' && event?.data?.id && pendings.has(String(event.data.id))) {
@@ -1146,8 +1165,15 @@ export function apply(ctx, config) {
           conn.startedAt = Date.now();
           audit('connect', { conn: conn.id, sid: boundSid, since: since });
 
+          // 保活：注释行给中间代理/NAT；具名 ping 事件给页面看门狗——
+          // EventSource 收不到注释行，页面靠 ping 判定半开连接并主动重连。
           conn.heartbeat = setInterval(() => {
-            try { res.write(': hb\n\n'); } catch {}
+            try {
+              res.write(': hb\n\n');
+              res.write(`event: ping\ndata: ${JSON.stringify({ t: Date.now(), seq: globalSeq })}\n\n`);
+            } catch {
+              handleDeadConn(conn);
+            }
           }, HEARTBEAT_MS);
 
           req.on('close', () => {

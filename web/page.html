@@ -213,6 +213,7 @@ var state = {
   apTimer: null, apLeft: 0,
   nearBottom: true,
   sendLockUntil: 0,
+  lastPingAt: 0,     // 最近一次服务器心跳（具名 ping 事件）；看门狗据此判定半开连接
 };
 // 游标持久化：安卓息屏回前台走整页重载（P5 实测），靠 sessionStorage 带回断点。
 try {
@@ -658,7 +659,7 @@ function setSession(sid, cwd) {
 // ── 配对失效处理（阶段 2，对齐 ZCode：过期需电脑端重新生成）──────────────
 function retryConnect() {
   setConn('bad', '连接断开，' + Math.round(state.backoff / 1000) + 's 后重连');
-  var wait = state.backoff;
+  var wait = state.backoff * (0.7 + Math.random() * 0.6); // ±30% 抖动，避免重连同步风暴
   state.backoff = Math.min(state.backoff * 2, 10000);
   setTimeout(connect, wait);
 }
@@ -680,15 +681,21 @@ function handleAuthCode(code) {
 
 function connect() {
   if (state.es) { try { state.es.close(); } catch (e) {} }
+  state.lastPingAt = Date.now(); // 起算宽限：等首个 ping 到达
   setConn('', '连接中…');
   var url = '/mobile-remote/sse?token=' + encodeURIComponent(token) + '&since=' + state.seq;
   var es = new EventSource(url);
   state.es = es;
   es.addEventListener('open', function () {
     state.backoff = 1000;
+    state.lastPingAt = Date.now();
     setConn('ok', '已连接');
     $('stoppedBanner').classList.remove('show');
     $('replacedBanner').classList.remove('show');
+  });
+  // 服务器心跳（15s 一次）：EventSource 收不到注释行，具名 ping 是唯一可靠信号。
+  es.addEventListener('ping', function () {
+    state.lastPingAt = Date.now();
   });
   es.addEventListener('hello', function (e) {
     var d = JSON.parse(e.data);
@@ -790,6 +797,24 @@ document.addEventListener('visibilitychange', function () {
     connect();
   }
 });
+// 网络恢复（飞行模式关闭/Wi-Fi 重连）立即重连，不等退避计时。
+window.addEventListener('online', function () {
+  if (state.noAuto) return;
+  state.backoff = 1000;
+  if (!state.es || state.es.readyState !== 1) connect();
+});
+// 半开连接看门狗（阶段 2）：连接显示 OPEN 但 45s 无任何心跳 → 判定链路已死
+// （弱网切换、NAT 超时等），主动断开立即重连。周期 10s，宽限覆盖 15s 心跳间隔。
+setInterval(function () {
+  if (state.noAuto) return;
+  if (!state.es || state.es.readyState !== 1) return; // 非 OPEN：EventSource 自身重连接管
+  if (Date.now() - state.lastPingAt > 45000) {
+    toast('连接超时，正在重连…');
+    try { state.es.close(); } catch (e) {}
+    state.backoff = 1000;
+    connect();
+  }
+}, 10000);
 
 if (!token) {
   document.body.innerHTML = '<div id="hintBar">链接缺少配对码，请通过电脑端设置页的二维码打开。</div>';
