@@ -1,11 +1,11 @@
 {
   "name": "mobile-remote",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "license": "MIT",
   "private": true,
   "type": "module",
   "main": "index.js",
-  "description": "单会话远程控制：手机扫码/开链接实时看 DSH 会话流、发消息、审批权限请求（阶段 1 MVP）",
+  "description": "移动端远程控制：手机扫码/开链接看 DSH 会话流、发消息、审批、切换会话（完整对齐 ZCode 功能面）",
   "files": [
     "index.js",
     "client.js",
