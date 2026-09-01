@@ -87,6 +87,93 @@
 
 ---
 
+## 阶段 4 · UI 2.0（当前可执行）
+
+```text
+任务：为 DSH 插件 mobile-remote 实现阶段 4「UI 2.0：首页工作区卡片 + 会话视图对齐 ZCode」。工作目录 D:\dsh-plugins\mobile-remote。环境：Windows + Git Bash，node v24 在 PATH。
+
+开工必读（按序）：
+1. D:\dsh-plugins\mobile-remote\docs\roadmap.md（唯一事实源 + DSH 运行时清单）
+2. D:\dsh-plugins\mobile-remote\docs\phase-4-spec.md（本任务规格，含视觉基准说明）
+3. docs/probe-findings.md（P4：sessions.list()/sessionQuery 带 cwd 与标题快照）
+
+硬约束：
+- 本阶段 90% 工作在 web/page.html，后端仅给 /mobile-remote/sessions 补 cwd 与最近活动时间。
+- 范围排除：底栏五键（盾牌/上下文/模型/思考强度 → 阶段 5）、附件、主题切换、新建会话、云 relay、Bot Channel；禁止 import phone-push（注释级参考允许）。
+- 所有 markdown/代码渲染必须受控 DOM 构建（textContent），与阶段 2 代码块同防注入标准。
+- 代码注释中文；conventional commits；不主动 push。
+
+实现范围：phase-4-spec.md 全部——首页工作区卡片长列表（cwd 分组/折叠/汇总行/说明卡）、
+任务行（标题+相对时间+四态胶囊+点击进入）、会话视图（顶栏返回、表格与行内代码渲染、
+流式"当前动作"toast、↓FAB）、底部输入栏保持现状不动。
+
+验收（真机，与阶段 2 欠账六项合并为一次手机配合，先列清单再逐项触发）：
+- 阶段 2 六项：列表切换/状态刷新/过期重配对/审计回溯/息屏恢复/停用零影响回归
+- 本阶段：首页分组与折叠正确、30+ 会话长列表流畅、表格/代码渲染无注入、
+  toast 与 FAB 行为、返回导航不丢绑定与滚动位置
+
+交付：版本 1.2.0 + CHANGELOG；roadmap 打勾；commit + tag phase-4-done。
+止损：部分会话无 cwd → 归入「未分组」卡片，不阻塞交付。
+预算提示：约 15–25 万 token。
+```
+
+---
+
+## 阶段 5a · 底栏控件探针（可与阶段 4 并行）
+
+```text
+任务：为 DSH 插件 mobile-remote 完成阶段 5a「底栏控件探针 P7–P9」。工作目录 D:\dsh-plugins\mobile-remote。环境：Windows + Git Bash，node v24 在 PATH。
+背景：本任务可与阶段 4（UI 2.0）并行执行——两者文件面零重叠。阶段 4 任务可能正在同一仓库工作，务必遵守下面的隔离约束。
+
+开工必读（按序）：
+1. D:\dsh-plugins\mobile-remote\docs\roadmap.md（唯一事实源 + DSH 运行时清单）
+2. D:\dsh-plugins\mobile-remote\docs\phase-5-spec.md（探针项定义在「探针（任务 5a）」节）
+3. docs/probe-findings.md（已有 P1–P6 结论，本任务只在其末尾追加 P7–P9）
+
+探针项：
+- P7 上下文用量/缓存命中：session 事件流（turn/end、agent/status 等）与宿主包是否携带 token 用量/上下文占用/缓存命中数据
+- P8 运行时切换模型：DSH 是否有 per-session/运行时模型切换接口（查宿主包 dsh-llm/agent-loop 源码 + probe profile 实测）
+- P9 思考强度档位：harness 是否暴露 per-session/per-message 思考档位
+
+硬约束（并行隔离）：
+- 只允许改动 probe/（新增探针脚本）与 docs/probe-findings.md（末尾追加）；禁止改动 index.js/client.js/web/、roadmap.md、phase-5-spec.md——阶段 4 正在改它们。
+- git 提交只 `git add probe/ docs/probe-findings.md`，禁止 `git add -A`/`git add .`，防止把阶段 4 的半成品收进提交。
+- 探针用独立 headless probe profile（照 phase-0 的 probe/plugin 方式装配），不碰用户正在用的 DSH web 实例，不需要手机配合。
+- 每项三态结论（证实/证伪/未定）+ 证据（宿主包源码行号/实测输出）；探不明如实写未定并给降级建议（隐藏/只读），禁止硬赌。
+- 代码注释中文；conventional commits；不主动 push。
+
+完成标准：probe-findings.md 追加 P7–P9 三态结论；commit + tag phase-5a-done。
+预算提示：约 3–6 万 token。
+```
+
+---
+
+## 阶段 5b · 底栏控件实现（阶段 4 与 5a 都完成后执行）
+
+```text
+任务：为 DSH 插件 mobile-remote 实现阶段 5b「底栏运行时控件实现」。工作目录 D:\dsh-plugins\mobile-remote。环境：Windows + Git Bash，node v24 在 PATH。
+前置确认：阶段 4 已完成（v1.2.0，tag phase-4-done）且阶段 5a 探针已完成（tag phase-5a-done）；任一未完成则立即停止并汇报，不得开工。
+
+开工必读（按序）：
+1. D:\dsh-plugins\mobile-remote\docs\roadmap.md
+2. D:\dsh-plugins\mobile-remote\docs\phase-5-spec.md
+3. docs/probe-findings.md 的 P7–P9 节（控件形态以此为准：证实=真控件；证伪/未定=按规格降级为隐藏或只读）
+
+硬约束：
+- 底栏布局按 phase-5-spec：盾牌（权限模式）· 上下文/缓存 · 模型 · 思考强度 · ↑发送；附件与调色板明确不做。
+- 盾牌三档（手机审批/全部放行/全部拒绝）是无需探针的确定项，直接实现；「全部放行」页面红色警示条常驻；
+  档位为会话级临时状态、重启回到手机审批；每次切换写审计 JSONL；设置页同步显示当前模式。
+- 禁止 import phone-push；代码注释中文；conventional commits；不主动 push。
+
+验收（真机，先列清单再逐项触发）：盾牌三档各实测一条审批路径（放行/拒绝/回落）+ 审计可回溯 +
+设置页模式同步；P7–P9 对应控件逐个实测（真控件）或确认降级形态；停用回归零影响。
+
+交付：版本 1.3.0 + CHANGELOG；roadmap 阶段 5 打勾（注明 5a/5b 拆分执行）；commit + tag phase-5-done。
+预算提示：约 5–15 万 token（探针已在 5a 完成）。
+```
+
+---
+
 ## 阶段 3 · 可选项（仅在用户点名时使用）
 
 公网 relay（自备服务器与域名，+15–25 万 token）或 Bot Channel 入口。需要时再让我起草对应规格，不预置提示词。
