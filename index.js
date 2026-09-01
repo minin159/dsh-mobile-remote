@@ -561,7 +561,10 @@ export function apply(ctx, config) {
       // "真人输入"标记：只有电脑端用户敲下的 user/message 才算（source.kind === 'user'）。
       // 插件 steer（kind:'plugin'）、失败重试轮、后台事件都不能代表"用户正在这个会话"。
       const isHumanInput = type === 'user/message' && event?.data?.source?.kind === 'user';
-      touchActivity(sid, isHumanInput ? { humanAt: Date.now() } : undefined);
+      touchActivity(sid, isHumanInput ? { humanAt: Date.now(), errorMsg: '' } : undefined);
+      // 回合边界记录：turn/end 的 reason.kind 供"完成"状态映射使用（turn/start 时清零）。
+      if (type === 'turn/end') touchActivity(sid, { turnReason: String(event?.data?.reason?.kind || '') });
+      else if (type === 'turn/start') touchActivity(sid, { turnReason: '' });
       if (!st().enabled) return; // 停用即零参与：不建帧、不转发、不占缓冲
       // 未绑定 + 有手机连接：首个根会话事件自动补绑（手机先开、电脑后干活的场景）。
       if (!boundSid && activeConn) {
@@ -601,11 +604,23 @@ export function apply(ctx, config) {
 
   ctx.on('agent/status', (payload) => {
     try {
-      const status = String(payload?.status || '');
+      const raw = String(payload?.status || '');
       const agent = payload?.agent;
       const sid = extractSessionId(payload);
       const cwd = agent?.session?.header?.cwd;
-      touchActivity(sid, { status, ...(cwd ? { cwd } : {}) });
+      // 四态映射（启发式，CHANGELOG 如实说明）：running → 运行中；idle 且上一回合
+      // 正常收尾（turn/end reason.kind==='completed'）→ 完成；其余 idle → 空闲；
+      // agent/error → 错误（见下），真人新输入或新一轮运行时清除。
+      let eff = raw;
+      if (raw === 'idle') {
+        const prev = sid ? activity.get(String(sid)) : undefined;
+        eff = prev?.turnReason === 'completed' ? 'done' : 'idle';
+      }
+      touchActivity(sid, {
+        status: eff,
+        ...(cwd ? { cwd } : {}),
+        ...(raw === 'running' ? { errorMsg: '' } : {}), // 新一轮运行：清除错误标记
+      });
       if (!st().enabled || !activeConn) return;
       if (!boundSid && sid) {
         const roots = rootSessionIds();
@@ -615,10 +630,28 @@ export function apply(ctx, config) {
         }
       }
       if (sid && String(sid) === boundSid) {
-        sendFrame('status', { sessionId: String(sid), status });
+        sendFrame('status', { sessionId: String(sid), status: eff });
       }
     } catch (error) {
       console.error(PLUGIN_TAG, 'agent/status 处理异常:', msgOf(error));
+    }
+  });
+
+  // agent/error：把会话标记为错误态（宿主侧有 30s 跨会话去抖经验），顶栏/列表显示
+  // 「错误」chip。事件载荷宿主未给文档，会话 id 与错误文本均防御式提取。
+  ctx.on('agent/error', (payload) => {
+    try {
+      const sid = extractSessionId(payload);
+      const rawMsg = payload?.error?.message ?? payload?.message
+        ?? (typeof payload?.error === 'string' ? payload.error : '');
+      const message = clip(rawMsg, 200);
+      touchActivity(sid, { status: 'error', errorMsg: message });
+      if (!st().enabled || !activeConn) return;
+      if (sid && String(sid) === boundSid) {
+        sendFrame('status', { sessionId: String(sid), status: 'error', error: message });
+      }
+    } catch (error) {
+      console.error(PLUGIN_TAG, 'agent/error 处理异常:', msgOf(error));
     }
   });
 
@@ -773,6 +806,7 @@ export function apply(ctx, config) {
       relayError,
       active: activeConn ? 1 : 0,
       boundSession: boundSid,
+      boundStatus: boundSid ? (activity.get(boundSid)?.status || null) : null,
       pinnedSession: pinnedSid,
       urls: { local, phone, phoneSource },
       lan,

@@ -41,6 +41,8 @@
   .chip { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line);
     color: var(--muted); flex-shrink: 0; }
   .chip.run { color: var(--ok); border-color: var(--ok); }
+  .chip.bad { color: var(--bad); border-color: var(--bad); }
+  .chip.done { color: var(--accent); border-color: var(--accent); }
   #sessionsBtn { border: 1px solid var(--line); background: transparent; color: var(--muted);
     border-radius: 8px; font-size: 13px; padding: 3px 9px; flex-shrink: 0; }
   /* ── 会话抽屉（阶段 2）────────────────────────────────── */
@@ -67,6 +69,8 @@
   .schip { font-size: 10.5px; padding: 2px 7px; border-radius: 999px; border: 1px solid var(--line);
     color: var(--muted); flex-shrink: 0; }
   .schip.run { color: var(--ok); border-color: var(--ok); }
+  .schip.err { color: var(--bad); border-color: var(--bad); }
+  .schip.done { color: var(--accent); border-color: var(--accent); }
   /* ── 横幅（停止/顶替）────────────────────────────────── */
   .banner {
     display: none; padding: 10px 14px; font-size: 13px; line-height: 1.5;
@@ -620,11 +624,22 @@ function setConn(cls, text) {
   $('connDot').className = cls;
   $('connText').textContent = text;
 }
-function setAgent(status) {
+function setAgent(status, errorMsg) {
+  var prev = state.agentStatus;
   state.agentStatus = status || null;
   var chip = $('agentChip');
-  chip.textContent = status === 'running' ? '运行中' : (status ? '空闲' : '无会话');
-  chip.className = 'chip' + (status === 'running' ? ' run' : '');
+  // 四态：运行中/空闲/完成/错误（done 为启发式映射：idle 且上一回合正常收尾）。
+  chip.textContent = status === 'running' ? '运行中'
+    : status === 'done' ? '完成'
+    : status === 'error' ? '错误'
+    : (status ? '空闲' : '无会话');
+  chip.className = 'chip'
+    + (status === 'running' ? ' run' : '')
+    + (status === 'error' ? ' bad' : '')
+    + (status === 'done' ? ' done' : '');
+  if (status === 'error' && prev !== 'error') {
+    toast('会话出错' + (errorMsg ? '：' + errorMsg : ''));
+  }
 }
 function setSession(sid, cwd) {
   state.sessionId = sid || null;
@@ -671,7 +686,7 @@ function connect() {
   });
   es.addEventListener('status', function (e) {
     var d = JSON.parse(e.data);
-    setAgent(d.status);
+    setAgent(d.status, d.error);
   });
   es.addEventListener('approval', function (e) {
     pushApproval(JSON.parse(e.data));

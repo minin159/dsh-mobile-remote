@@ -2336,6 +2336,8 @@ window.__ModuleLoader__.load({
         relayError: typeof json.relayError === 'string' ? json.relayError : '',
         active: typeof json.active === 'number' ? json.active : 0,
         boundSession: typeof json.boundSession === 'string' ? json.boundSession : null,
+        boundStatus: typeof json.boundStatus === 'string' ? json.boundStatus : null,
+        pinnedSession: typeof json.pinnedSession === 'string' ? json.pinnedSession : null,
         urls: json.urls || { local: '', phone: '', phoneSource: '' },
         lan: Array.isArray(json.lan) ? json.lan : [],
         tailscale: Array.isArray(json.tailscale) ? json.tailscale : [],
@@ -2354,6 +2356,13 @@ window.__ModuleLoader__.load({
     function throttleBucket(sec) {
       var n = Number(sec) || 2
       return n <= 1 ? 1 : (n <= 2 ? 2 : (n <= 5 ? 5 : 10))
+    }
+    // 会话状态标签（与手机端四态映射一致；done 为 idle+正常收尾的启发式）。
+    function statusText(st) {
+      if (st === 'running') return '运行中'
+      if (st === 'done') return '完成'
+      if (st === 'error') return '错误'
+      return '空闲'
     }
 
     // 复制到剪贴板：localhost 是安全上下文，优先 clipboard API，兜底 execCommand。
@@ -2613,7 +2622,11 @@ window.__ModuleLoader__.load({
                     patch({ sendThrottleSec: order[(order.indexOf(cur) + 1) % order.length] })
                   },
                 }, model.sendThrottleSec + ' 秒')),
-                row('当前状态', model.boundSession ? ('会话 ' + model.boundSession.replace(/^session-/, '').slice(0, 8)) : '未绑定会话',
+                row('当前状态', model.boundSession
+                  ? ('会话 ' + model.boundSession.replace(/^session-/, '').slice(0, 8)
+                    + (model.boundStatus ? ' · ' + statusText(model.boundStatus) : '')
+                    + (model.pinnedSession && model.pinnedSession !== model.boundSession ? '（钉住已切换）' : ''))
+                  : '未绑定会话',
                   h('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary, rgba(127,127,127,0.7))' } },
                     model.active > 0 ? '📱 已连接 ' + model.active + ' 台' : '无手机连接')),
                 // 操作按钮
