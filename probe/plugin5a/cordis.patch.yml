@@ -1,0 +1,4 @@
+# probe 5a 探针插件的组合树挂载（与阶段 0 probe 插件同构，只插入不覆盖）
+- insert:
+    - id: mobile-remote-probe5a
+      name: 'mobile-remote-probe5a'

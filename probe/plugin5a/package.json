@@ -1,0 +1,13 @@
+{
+  "name": "mobile-remote-probe5a",
+  "version": "0.0.0-probe.0",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "description": "// probe 阶段 5a 探针插件：P7 上下文用量/缓存命中 · P8 运行时切模型 · P9 思考强度档位 实测（不进发布）",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

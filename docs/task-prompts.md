@@ -148,28 +148,41 @@
 
 ---
 
-## 阶段 5b · 底栏控件实现（阶段 4 与 5a 都完成后执行）
+## 阶段 5b · 底栏控件（合并 5a 探针收尾，一个任务执行）
 
 ```text
-任务：为 DSH 插件 mobile-remote 实现阶段 5b「底栏运行时控件实现」。工作目录 D:\dsh-plugins\mobile-remote。环境：Windows + Git Bash，node v24 在 PATH。
-前置确认：阶段 4 已完成（v1.2.0，tag phase-4-done）且阶段 5a 探针已完成（tag phase-5a-done）；任一未完成则立即停止并汇报，不得开工。
+任务：为 DSH 插件 mobile-remote 完成阶段 5「底栏运行时控件」——含 5a 探针收尾 + 5b 实现。工作目录 D:\dsh-plugins\mobile-remote。环境：Windows + Git Bash，node v24 在 PATH。
+前置确认：阶段 4 已完成（v1.2.0，tag phase-4-done）。注意：此前有个未完成的 5a 任务只留下 probe/plugin5a/ 骨架（cordis.patch.yml/index.js/package.json，未提交），本任务接手它先补完探针再实现。
 
 开工必读（按序）：
-1. D:\dsh-plugins\mobile-remote\docs\roadmap.md
-2. D:\dsh-plugins\mobile-remote\docs\phase-5-spec.md
-3. docs/probe-findings.md 的 P7–P9 节（控件形态以此为准：证实=真控件；证伪/未定=按规格降级为隐藏或只读）
+1. D:\dsh-plugins\mobile-remote\docs\roadmap.md（唯一事实源 + DSH 运行时清单）
+2. D:\dsh-plugins\mobile-remote\docs\phase-5-spec.md（探针项定义在「探针（任务 5a）」节；控件形态在后续节）
+3. docs/probe-findings.md（已有 P1–P6 结论；P7–P9 由本任务补齐）
 
-硬约束：
+第一步 · 探针收尾（先做，做完先 commit + tag phase-5a-done 再继续）：
+- P7 上下文用量/缓存命中：session 事件流（turn/end、agent/status 等）与宿主包是否携带 token 用量/上下文占用/缓存命中数据
+- P8 运行时切换模型：DSH 是否有 per-session/运行时模型切换接口（查宿主包 dsh-llm/agent-loop 源码 + 独立 probe profile 实测，不碰用户在用的 DSH web 实例）
+- P9 思考强度档位：harness 是否暴露 per-session/per-message 思考档位
+- 全部三态结论（证实/证伪/未定）+ 证据（宿主包源码行号/实测输出）写入 probe-findings.md 追加节；探不明如实写未定并给降级建议（隐藏/只读），禁止硬赌
+- **强制检查点**：tag phase-5a-done 提交后，向用户输出 P7–P9 结论摘要与拟实现控件清单，等用户回复确认后才进入第二步；用户未确认前不得写任何实现代码
+
+第二步 · 实现（收紧范围：盾牌全做；P7–P9 本轮不做完整控件）：
 - 底栏布局按 phase-5-spec：盾牌（权限模式）· 上下文/缓存 · 模型 · 思考强度 · ↑发送；附件与调色板明确不做。
 - 盾牌三档（手机审批/全部放行/全部拒绝）是无需探针的确定项，直接实现；「全部放行」页面红色警示条常驻；
   档位为会话级临时状态、重启回到手机审批；每次切换写审计 JSONL；设置页同步显示当前模式。
+- **P7–P9 控件本轮一律不做完整实现**：仅当 P7 证实且实现代价极小（前端改动 ≤ 约 30 行）可做只读展示，
+  否则三个键位隐藏或置灰；探针结论已存档，完整实现留给以后按需再开。
 - 禁止 import phone-push；代码注释中文；conventional commits；不主动 push。
 
-验收（真机，先列清单再逐项触发）：盾牌三档各实测一条审批路径（放行/拒绝/回落）+ 审计可回溯 +
-设置页模式同步；P7–P9 对应控件逐个实测（真控件）或确认降级形态；停用回归零影响。
+验收（真机，先列清单再逐项触发；**合并此前阶段 2+4 欠账共 11 项一起验**）：
+- 盾牌三档各实测一条审批路径（放行/拒绝/回落）+ 审计可回溯 + 设置页模式同步
+- P7–P9 对应控件逐个实测（真控件）或确认降级形态
+- 阶段 2 欠账六项（列表切换/状态刷新/过期重配对/审计回溯/息屏恢复/停用零影响回归）+ 阶段 4 五项（首页分组/折叠、长列表滚动、表格代码渲染无注入、toast 与 FAB、往返导航状态保持）
+- Tailscale 地址连通性（此前从未实测，顺手补上）
 
-交付：版本 1.3.0 + CHANGELOG；roadmap 阶段 5 打勾（注明 5a/5b 拆分执行）；commit + tag phase-5-done。
-预算提示：约 5–15 万 token（探针已在 5a 完成）。
+交付：版本 1.3.0 + CHANGELOG；roadmap 阶段 5 打勾；两个 tag：探针完成时 phase-5a-done，全部完成时 phase-5-done。
+预算护栏（硬约束）：本任务红线 15 万 token——实现每步先自检再继续，UI/控件最多两轮迭代，测试失败同一问题重试不超过两次，超出红线立即停下汇报当前进度与剩余项，不得无上限重试。
+预算提示：目标 8–12 万 token（A+C 收敛档：盾牌三档实现 + P7–P9 探针结论存档；P8/P9 控件不做实现，P7 至多多做只读展示）。
 ```
 
 ---
