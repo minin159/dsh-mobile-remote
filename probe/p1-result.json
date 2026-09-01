@@ -1,0 +1,60 @@
+{
+  "port": 18791,
+  "at": "2026-09-01T15:47:43.936Z",
+  "results": [
+    {
+      "id": "P1.1",
+      "name": "exact 路由 + JSON + 自定义头/透传",
+      "verdict": "PASS",
+      "evidence": "status=200 content-type=application/json; charset=utf-8 x-probe=exact-1 echo=hello"
+    },
+    {
+      "id": "P1.2",
+      "name": "多条 exact 路由并存",
+      "verdict": "PASS",
+      "evidence": "status=200 body=exact-2-ok"
+    },
+    {
+      "id": "P1.3",
+      "name": "kind:'prefix' 前缀路由（含深层路径）",
+      "verdict": "PASS",
+      "evidence": "/probe/prefix → 200; /probe/prefix/aaa/bbb → 200"
+    },
+    {
+      "id": "P1.4",
+      "name": "HTML 页面返回 + Content-Type",
+      "verdict": "PASS",
+      "evidence": "status=200 content-type=text/html; charset=utf-8 bytes=178"
+    },
+    {
+      "id": "P1.5",
+      "name": "SSE（text/event-stream 流式推送）",
+      "verdict": "PASS",
+      "evidence": "status=200 content-type=text/event-stream 收到事件=3"
+    },
+    {
+      "id": "P1.6",
+      "name": "WebSocket 升级（registerUpgrade + 手写握手/帧）",
+      "verdict": "PASS",
+      "evidence": "echo=[\"probe-msg-1\",\"probe-msg-2\"]"
+    },
+    {
+      "id": "P1.7",
+      "name": "未匹配路由 → 404（fallback 未占用时）",
+      "verdict": "PASS",
+      "evidence": "status=404"
+    },
+    {
+      "id": "P1.8",
+      "name": "重复路径注册抛错（路由冲突即配置错误）",
+      "verdict": "PASS",
+      "evidence": "register() 抛 duplicate route 错误"
+    },
+    {
+      "id": "P1.9",
+      "name": "handler 抛错 → 400、进程存活",
+      "verdict": "PASS",
+      "evidence": "status=400"
+    }
+  ]
+}

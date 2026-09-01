@@ -39,7 +39,7 @@ mobile-remote（DSH Cordis 插件，独立目录 D:\dsh-plugins\mobile-remote）
 
 | 阶段 | 内容 | 预算(token) | 验收 |
 |---|---|---|---|
-| 0 探针 | webServer 路由/长连接能力、steer 持续对话、审批语义、会话枚举、手机连通性、二维码呈现 | 8–15 万 | probe-findings.md 六项三态结论 + phase-1-spec 修订 |
+| 0 探针 ✅ | webServer 路由/长连接能力、steer 持续对话、审批语义、会话枚举、手机连通性、二维码呈现 | 8–15 万 | probe-findings.md 六项三态结论 + phase-1-spec 修订（2026-09-02 完成，tag `phase-0-done`；六项均证实，P5 手机侧待实测回填） |
 | 1 MVP | 单会话远程控制：扫码/链接进入、实时看流、手机发消息、y/n 审批、断线自动恢复 | 25–40 万 | 手机端逐项实测清单通过 |
 | 2 完整对齐 | 会话列表与切换、状态标签、踢出/过期/重配对、审计 JSONL、恢复加固与 UI 打磨 | 20–35 万 | 对齐 ZCode 功能面 |
 | 3 可选 | 公网 relay（需服务器）/ Bot Channel 类入口 | 15–25 万 | 用户点名才做 |
@@ -68,19 +68,24 @@ mobile-remote（DSH Cordis 插件，独立目录 D:\dsh-plugins\mobile-remote）
 - `inject: ['timer','tools']`；`ctx.timeout(ms)` 返回 Promise。
 - 服务：`ctx.get('jobs').onJobDone(cb)`、`ctx.get('subprocess').spawn/resolveExecutable`、
   `ctx.inject(['settings'])`（namespace 'mobile-remote'，schemastery schema，applies:'live'）、
-  `ctx.inject(['webServer'])`（register 路由；能否前缀/静态托管 → 探针 P1）。
-- 事件：`approval/request`（async (req,next) → 'allowed-once'/'rejected' 或 next()）、
-  `session/event`（assistant/message 流）、`agent/status`（running/idle）、
+  `ctx.inject(['webServer'])`（register 路由；**P1 实测：exact+prefix 均可、registerUpgrade 可做 WS（原始 socket 归插件）、SSE/Content-Type 自由控制；阶段 1 选 SSE**）、
+  `ctx.get('sessions').list()`（live 会话）与 `ctx.get('sessionQuery').listSessions()`（全量含持久化，newest-first）——**P4 实测**。
+- 事件：`approval/request`（async (req,next) → 'allowed-once'/'rejected' 或 next()；
+  **P3 实测：插件决策即终局、GUI 不再弹；宿主无默认超时，插件必须自带（默认 120s→next()），挂起会永久阻塞（abort→cancelled）**）、
+  `session/event`（assistant/message 流；subject.header.id 即会话标识，P4 实测）、`agent/status`（running/idle）、
   `agent/error`（30s 跨会话去抖经验）、`subagent/end`、`agent/inbox/inserted`。
 - steer：`@deepseek-ai/dsh-llm` 的 `createUserMessage({content:[{type:'text',text}],source:{kind:'plugin',plugin:'mobile-remote'}})` → `agent.steer(msg)`。
+  **P2 实测：无需武装、无频控、1s/10s 间隔连发全部入队消费；空闲唤醒是 agent-loop 一等路径（idle 时 wakeDriver 开新轮）。**
 - 工具注册：`ctx.tools.register({name,description,parameters,output:{schema,render},execute})`。
+- **部署前提（P5）**：生产 DSH web 默认 `127.0.0.1:3080`，手机可达需 `dsh web --host 0.0.0.0` 启动。
 
 ## 风险与对策
 
-- webServer 不支持 WS/前缀路由 → 降级 SSE + 轮询，页面由 JS 内联返回（P1 先行定选型）。
-- steer 持续对话有频控/副作用 → 探针 P2 实测，必要时加发送节流与确认。
-- 手机批准后电脑端仍弹 GUI → 产品语义定为「混合回落」，文档如实记录差异。
-- 手机连通性（Tailscale 唤醒时延、休眠）→ P5 实测；长连接断线自动重连为硬要求。
+- ~~webServer 不支持 WS/前缀路由 → 降级 SSE + 轮询~~ **P1 已实测：prefix 路由与 WS 均可用；选型定为 SSE + POST（WS 需自实现帧，不采用）。**
+- steer 持续对话有频控/副作用 → **P2 已实测：无频控、无武装要求**；发送节流保留为 UI 防连点（2s）。
+- 手机批准后电脑端仍弹 GUI → **P3 已实测：插件决策即终局，GUI 不弹**；「混合回落」语义保留，超时由插件自实现。
+- 手机连通性（Tailscale 唤醒时延、休眠）→ P5 服务端就绪，手机侧待实测回填；长连接断线自动重连为硬要求（退避 1s→10s）。
+- **生产 DSH 默认只绑回环** → 阶段 1 部署前提：`dsh web --host 0.0.0.0`。
 - 测试需要用户手机配合：每阶段验收列出手机动作清单。
 
 ## 仓库约定

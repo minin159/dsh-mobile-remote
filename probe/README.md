@@ -1,0 +1,39 @@
+# probe/ — 阶段 0 技术探针
+
+> 全部文件带 `// probe` 标记，只做实测，不进发布包。结论汇总见 `docs/probe-findings.md`。
+
+## 内容
+
+| 文件 | 探针 | 运行方式 |
+|---|---|---|
+| `p1-webserver.mjs` | P1 webServer 能力（路由/前缀/WS/SSE/Content-Type） | `node probe/p1-webserver.mjs` |
+| `p6-qr.mjs` | P6 二维码生成（内联 MIT 库，服务端 SVG） | `node probe/p6-qr.mjs` |
+| `p6-qrcode-generator.js` | vendored MIT 实现（Kazuhiko Arase，MIT，头保留） | 被 p5/p6 引用 |
+| `p5-server.mjs` | P5 手机连通性（HTTP+SSE，0.0.0.0:18790，页面含 P6 双码） | `node probe/p5-server.mjs` |
+| `plugin/` | P2/P3/P4 探针插件（mobile-remote-probe） | 见下 |
+| `results/` | 实测原始输出（p1-result.json、p3-*.log、p2.log、p5-*.log/jsonl） | gitignore，不入库 |
+
+## 探针插件运行环境（P2/P3/P4）
+
+独立 DSH profile（不碰 web/desktop，验收后可删）：
+
+- `C:\Users\lq\.dsh\profiles\probe\package.json` — bundles: `dsh-base` + `dsh-headless` + `mobile-remote-probe`
+- `probe\node_modules\mobile-remote-probe` — junction 指回本仓库 `probe/plugin/`
+
+```sh
+# P4 会话枚举
+cd probe/workspace
+MOBILE_REMOTE_PROBE_MODE=p4 MOBILE_REMOTE_PROBE_LOG=<绝对路径>\p4.log \
+  node C:\Users\lq\.dsh\profiles\node_modules\@deepseek-ai\dsh\lib\bin.js --profile probe "请调用 probe_p4 工具一次"
+
+# P3 审批（MODE 取 p3-allow / p3-reject / p3-none / p3-hang）
+MOBILE_REMOTE_PROBE_MODE=p3-allow ... --profile probe "请调用 probe_gate 工具一次"
+
+# P2 steer
+MOBILE_REMOTE_PROBE_MODE=p2 ... --profile probe "请调用 probe_p2 工具一次"
+```
+
+## P5 手机动作清单（验收时逐项触发）
+
+服务：`node probe/p5-server.mjs`（后台），地址见 `results/p5-urls.txt`。
+清单原文见 `docs/probe-findings.md` 的 P5 节。

@@ -1,0 +1,4 @@
+# 探针原始输出与临时工作区不入库（结论文档引用的数字已摘录进 docs/probe-findings.md）
+probe/results/
+probe/workspace/
+node_modules/

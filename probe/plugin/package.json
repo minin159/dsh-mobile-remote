@@ -1,0 +1,13 @@
+{
+  "name": "mobile-remote-probe",
+  "version": "0.0.0-probe.0",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "description": "// probe 阶段 0 探针插件：P2 steer / P3 审批 / P4 会话枚举 实测（不进发布）",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

@@ -1,0 +1,4 @@
+# probe 探针插件的组合树挂载（与 phone-push bundle 层同构，只插入不覆盖）
+- insert:
+    - id: mobile-remote-probe
+      name: 'mobile-remote-probe'
