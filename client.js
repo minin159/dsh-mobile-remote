@@ -2335,6 +2335,8 @@ window.__ModuleLoader__.load({
         pairTtlHours: typeof json.pairTtlHours === 'number' ? json.pairTtlHours : 72,
         tokenIssuedAt: typeof json.tokenIssuedAt === 'string' ? json.tokenIssuedAt : '',
         pairingExpired: json.pairingExpired === true,
+        auditEnabled: json.auditEnabled !== false,
+        auditPath: typeof json.auditPath === 'string' ? json.auditPath : '',
         relayRunning: json.relayRunning === true,
         relayError: typeof json.relayError === 'string' ? json.relayError : '',
         active: typeof json.active === 'number' ? json.active : 0,
@@ -2645,6 +2647,13 @@ window.__ModuleLoader__.load({
                       patch({ pairTtlHours: order[(idx + 1) % order.length] })
                     },
                   }, ttlLabel(model.pairTtlHours))),
+                row('审计日志', '记录连接/消息/审批元数据到 ~/.dsh/mobile-remote-audit.jsonl（不含消息正文）',
+                  h('button', {
+                    style: cyclerStyle(true),
+                    onClick: function () {
+                      patch({ auditEnabled: !model.auditEnabled }, model.auditEnabled ? '审计已关闭' : '审计已开启')
+                    },
+                  }, model.auditEnabled ? '开启' : '关闭')),
                 row('当前状态', model.boundSession
                   ? ('会话 ' + model.boundSession.replace(/^session-/, '').slice(0, 8)
                     + (model.boundStatus ? ' · ' + statusText(model.boundStatus) : '')

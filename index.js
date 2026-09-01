@@ -36,8 +36,9 @@ import { createRequire } from 'node:module';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { randomUUID, randomBytes, timingSafeEqual, createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { appendFile, mkdir, rename, stat } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { networkInterfaces } from 'node:os';
+import { homedir, networkInterfaces } from 'node:os';
 import { createServer as createRelayServer, request as httpRequest } from 'node:http';
 
 export const name = 'mobile-remote';
@@ -65,6 +66,7 @@ const DEFAULTS = {
   sendThrottleSec: 2,   // 发送节流（防连点，UI 同步用）
   relayPort: 3090,      // 手机中继监听端口（0.0.0.0）；DSH web 本体保持回环
   pairTtlHours: 72,     // 配对码有效期（小时）；0 = 不过期。过期需电脑端重新生成（对齐 ZCode 语义）
+  auditEnabled: true,   // 审计 JSONL（~/.dsh/mobile-remote-audit.jsonl）：只记元数据不记正文
 };
 
 /** 环形缓冲上限：每会话缓存最近 200 条转发帧，供断线/整页重载/切换会话后补发。 */
@@ -228,6 +230,7 @@ export function apply(ctx, config) {
       // 配对码签发时间（ISO 字符串）：有效期判定依据；旧版本升级后首次启动回填。
       tokenIssuedAt: z.string().default(typeof s.tokenIssuedAt === 'string' ? s.tokenIssuedAt : ''),
       pairTtlHours: z.number().default(clampInt(s.pairTtlHours, 0, 8760, DEFAULTS.pairTtlHours)),
+      auditEnabled: z.boolean().default(s.auditEnabled !== false),
       approvalWaitSec: z.number().default(clampInt(s.approvalWaitSec, 15, 600, DEFAULTS.approvalWaitSec)),
       sendThrottleSec: z.number().default(clampInt(s.sendThrottleSec, 1, 60, DEFAULTS.sendThrottleSec)),
       // 手机中继端口：DSH web CLI 封禁 --host 0.0.0.0（宿主安全策略，实测 dsh-web-app
@@ -244,6 +247,7 @@ export function apply(ctx, config) {
     token: typeof seed.token === 'string' ? seed.token : DEFAULTS.token,
     tokenIssuedAt: typeof seed.tokenIssuedAt === 'string' ? seed.tokenIssuedAt : '',
     pairTtlHours: clampInt(seed.pairTtlHours, 0, 8760, DEFAULTS.pairTtlHours),
+    auditEnabled: seed.auditEnabled !== false,
     approvalWaitSec: clampInt(seed.approvalWaitSec, 15, 600, DEFAULTS.approvalWaitSec),
     sendThrottleSec: clampInt(seed.sendThrottleSec, 1, 60, DEFAULTS.sendThrottleSec),
     relayPort: clampInt(seed.relayPort, 0, 65535, DEFAULTS.relayPort),
@@ -465,6 +469,39 @@ export function apply(ctx, config) {
     return null;
   }
 
+  // ── 审计 JSONL（阶段 2）：~/.dsh/mobile-remote-audit.jsonl ──────────────────
+  // 只记元数据：时间 / 动作 / 目标会话 / 来源 / 耗时 / 消息长度；不记消息正文，
+  // token 一律不落盘。写入失败即本轮停用（不刷屏）；每 500 行检查一次体积，
+  // 超 5MB 轮转为 .old；设置页可整体关闭（关闭后零写入）。
+  const AUDIT_PATH = join(homedir(), '.dsh', 'mobile-remote-audit.jsonl');
+  let auditDirReady = false; // 目录是否已确保存在
+  let auditDead = false;     // 写失败后本轮停用
+  let auditCount = 0;        // 已写行数（低频轮转检查用）
+  function audit(act, fields) {
+    const s = st();
+    if (!s.auditEnabled || auditDead) return;
+    const rec = { t: new Date().toISOString(), act, ...(fields || {}) };
+    void (async () => {
+      try {
+        if (!auditDirReady) {
+          await mkdir(dirname(AUDIT_PATH), { recursive: true });
+          auditDirReady = true;
+        }
+        auditCount += 1;
+        if (auditCount % 500 === 0) {
+          try {
+            const info = await stat(AUDIT_PATH);
+            if (info.size > 5 * 1024 * 1024) await rename(AUDIT_PATH, AUDIT_PATH + '.old');
+          } catch {}
+        }
+        await appendFile(AUDIT_PATH, JSON.stringify(rec) + '\n', 'utf8');
+      } catch (error) {
+        auditDead = true;
+        console.error(PLUGIN_TAG, '审计写入失败，本轮停用审计:', msgOf(error));
+      }
+    })();
+  }
+
   // ── 会话选择与绑定 ───────────────────────────────────────────────────────
   /** 从 agents 注册表取根 agent 的会话 id 集合（服务缺失时返回 null 表示未知）。 */
   function rootSessionIds() {
@@ -534,6 +571,7 @@ export function apply(ctx, config) {
 
   /** 电脑端"停止远程"：断开所有手机连接，挂起审批立即回落。 */
   function stopRemote(reason) {
+    audit('stop', { reason });
     for (const p of pendings.values()) {
       try { p.settle(p.fallback(), 'stop'); } catch {}
     }
@@ -698,7 +736,9 @@ export function apply(ctx, config) {
       const toolName = clip(req?.toolName ?? '未知工具', 80);
       const reason = clip(req?.reason ?? '', 800);
       const waitSec = clampInt(s.approvalWaitSec, 15, 600, DEFAULTS.approvalWaitSec);
+      const pushedAt = Date.now(); // 审计耗时起点
       sendFrame('approval', { id, toolName, reason, waitSec });
+      audit('approval_push', { id: id.slice(0, 8), tool: toolName, sid });
       console.log(PLUGIN_TAG, `审批已推手机 id=${id.slice(0, 8)} tool=${clip(toolName, 40)} wait=${waitSec}s`);
       return await new Promise((resolve) => {
         let settled = false;
@@ -710,6 +750,7 @@ export function apply(ctx, config) {
           pendings.delete(id);
           console.log(PLUGIN_TAG, `审批决定 id=${id.slice(0, 8)} via=${via}`);
           sendFrame('approval_result', { id, decision: String(outcome), via });
+          audit('approval_decide', { id: id.slice(0, 8), decision: String(outcome), via, waitMs: Date.now() - pushedAt });
           resolve(outcome);
         };
         const timer = setTimeout(() => settle(next(), 'timeout'), waitSec * 1000); // 超时 → 电脑端 GUI
@@ -830,6 +871,8 @@ export function apply(ctx, config) {
       approvalWaitSec: clampInt(s.approvalWaitSec, 15, 600, DEFAULTS.approvalWaitSec),
       sendThrottleSec: clampInt(s.sendThrottleSec, 1, 60, DEFAULTS.sendThrottleSec),
       relayPort,
+      auditEnabled: s.auditEnabled !== false,
+      auditPath: AUDIT_PATH,
       pairTtlHours: clampInt(s.pairTtlHours, 0, 8760, DEFAULTS.pairTtlHours),
       tokenIssuedAt: typeof s.tokenIssuedAt === 'string' ? s.tokenIssuedAt : '',
       pairingExpired: pairingExpired(),
@@ -978,6 +1021,7 @@ export function apply(ctx, config) {
           if (Number.isSafeInteger(parsed.pairTtlHours) && parsed.pairTtlHours >= 0 && parsed.pairTtlHours <= 8760) {
             patch.pairTtlHours = parsed.pairTtlHours;
           }
+          if (typeof parsed.auditEnabled === 'boolean') patch.auditEnabled = parsed.auditEnabled;
           if (parsed.stop === true) stopRequested = true;
           if (typeof parsed.publicBase === 'string') {
             const pb = parsed.publicBase.trim().replace(/\/+$/, '');
@@ -1001,6 +1045,8 @@ export function apply(ctx, config) {
           if (patch.enabled === true) await ensureToken();
           ensureRelay(); // 中继跟随 enabled 热启停；端口变更同样在此生效
           if (stopRequested) stopRemote(parsed.resetToken ? '配对码重置' : '电脑端请求停止');
+          if (patch.token !== undefined) audit('token_reset', {});
+          if (patch.enabled !== undefined) audit(patch.enabled ? 'enable' : 'disable', {});
           console.log(PLUGIN_TAG, '设置已更新: enabled=' + st().enabled
             + ' publicBase=' + (st().publicBase ? '已配置' : '未配置')
             + ' waitSec=' + st().approvalWaitSec);
@@ -1039,6 +1085,7 @@ export function apply(ctx, config) {
               old.res.write(`event: replaced\ndata: {}\n\n`);
             } catch {}
             teardownConn(old);
+            audit('replaced', { conn: old.id });
             console.log(PLUGIN_TAG, '旧手机连接已被顶替 #' + old.id);
           }
 
@@ -1096,6 +1143,8 @@ export function apply(ctx, config) {
             });
           }
           console.log(PLUGIN_TAG, `SSE 建连 #${conn.id} since=${since ?? '-'} 绑定=${boundSid ?? '无'}`);
+          conn.startedAt = Date.now();
+          audit('connect', { conn: conn.id, sid: boundSid, since: since });
 
           conn.heartbeat = setInterval(() => {
             try { res.write(': hb\n\n'); } catch {}
@@ -1105,6 +1154,7 @@ export function apply(ctx, config) {
             if (activeConn === conn) {
               activeConn = null;
               console.log(PLUGIN_TAG, `SSE 断开 #${conn.id}`);
+              audit('disconnect', { conn: conn.id, sid: boundSid, durMs: conn.startedAt ? Date.now() - conn.startedAt : 0 });
               scheduleApprovalFallback();
             }
             teardownConn(conn);
@@ -1166,6 +1216,7 @@ export function apply(ctx, config) {
             sendJson(res, 409, { ok: false, code: 'agent-unavailable', message: '会话代理未就绪（会话可能已结束），刷新页面重新绑定' });
             return;
           }
+          const t0 = Date.now();
           try {
             const llm = await loadLlm();
             agent.steer(llm.createUserMessage({
@@ -1174,10 +1225,12 @@ export function apply(ctx, config) {
             }));
           } catch (error) {
             console.error(PLUGIN_TAG, 'steer 失败:', msgOf(error));
+            audit('send', { sid: boundSid, len: text.length, ok: false, err: clip(msgOf(error), 120) });
             sendJson(res, 500, { ok: false, code: 'steer-failed', message: msgOf(error) });
             return;
           }
           lastSendAt = Date.now();
+          audit('send', { sid: boundSid, len: text.length, ok: true, durMs: Date.now() - t0 });
           console.log(PLUGIN_TAG, '手机消息已 steer 到', boundSid, '长度=' + text.length);
           sendJson(res, 200, { ok: true, sessionId: boundSid });
         },
@@ -1283,6 +1336,7 @@ export function apply(ctx, config) {
             });
             return;
           }
+          const fromSid = boundSid; // 切换前会话（审计用）
           const sid = typeof parsed.sessionId === 'string' ? parsed.sessionId.trim() : '';
           let live = true;
           if (!sid) {
@@ -1344,6 +1398,7 @@ export function apply(ctx, config) {
             conn.cursorBySid.set(boundSid, maxSeq);
           }
           console.log(PLUGIN_TAG, '切换绑定会话 →', (boundSid || '无') + (sid ? '' : '（跟随电脑）'));
+          audit('switch', { from: fromSid, to: boundSid, follow: !sid });
           sendJson(res, 200, { ok: true, sessionId: boundSid, cwd: boundCwd, live });
         },
       });
@@ -1402,6 +1457,7 @@ export function apply(ctx, config) {
             return;
           }
           console.log(PLUGIN_TAG, '页面已下发 path=' + logPath);
+          audit('page_open', {});
           sendHtml(res, 200, pageTemplate);
         },
       });
