@@ -243,6 +243,7 @@ export function apply(ctx, config) {
   // schema 不可用时的兜底配置（与默认值同形状 + 用户层 seed）。
   const fallbackState = {
     ...DEFAULTS,
+    enabled: seed.enabled === true, // 兜底路径也要尊重 seed 的开关（schema 在时由 settings 接管）
     publicBase: typeof seed.publicBase === 'string' ? seed.publicBase.trim().replace(/\/+$/, '') : DEFAULTS.publicBase,
     token: typeof seed.token === 'string' ? seed.token : DEFAULTS.token,
     tokenIssuedAt: typeof seed.tokenIssuedAt === 'string' ? seed.tokenIssuedAt : '',
