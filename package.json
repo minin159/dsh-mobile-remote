@@ -1,0 +1,35 @@
+{
+  "name": "mobile-remote",
+  "version": "1.0.0",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "description": "单会话远程控制：手机扫码/开链接实时看 DSH 会话流、发消息、审批权限请求（阶段 1 MVP）",
+  "files": [
+    "index.js",
+    "client.js",
+    "web",
+    "cordis.patch.yml",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "docs"
+  ],
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime"
+      ],
+      "platform": "web"
+    }
+  }
+}

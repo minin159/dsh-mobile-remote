@@ -1,0 +1,7 @@
+# mobile-remote bundle 层：把插件挂进组合树（宿主端 index.js 走包根导出）
+#
+# 本插件无必填个人配置：开关 / publicBase / token 全部在设置命名空间
+# 'mobile-remote' 里（设置页管理，持久化到 DSH settings，applies:'live' 热生效）。
+- insert:
+    - id: mobile-remote
+      name: 'mobile-remote'
