@@ -63,7 +63,7 @@ mobile-remote（DSH Cordis 插件，独立目录 D:\dsh-plugins\mobile-remote）
 5. **审批语义 = 混合回落**：手机批准放行 / 拒绝拦截，超时回落电脑端 GUI 确认（fail-safe 到人）。以探针 P3 实测为准。
 6. **steer 来源标记**：手机消息一律 `source:{kind:'plugin',plugin:'mobile-remote'}`，便于区分与后续审计。
 7. **运行时**：Windows，node v24 在 PATH；DSH 为 Cordis 宿主（运行时事实见下节清单）。
-8. **工程约定**：代码注释中文；conventional commits（feat:/fix:/docs:）；不主动 push 远程（远程仓库是否建立由用户决定）。
+8. **工程约定**：代码注释中文；conventional commits（feat:/fix:/docs:）；远程 `github.com/minin159/dsh-mobile-remote`（Private，2026-09-02 建立作备份），每阶段 tag 后 push 一次。
 9. **部署 = 插件内置路径过滤中继**（阶段 1 实测修正）：DSH web CLI 显式封禁 `--host 0.0.0.0`（dsh-web-app startup.js 安全检查），webserver config schema 也只允许 `127.0.0.1|0.0.0.0`——宿主设计意图是 web 本体不出回环。mobile-remote 自带反向代理（默认 0.0.0.0:3090 → 127.0.0.1:3080，仅放行 /mobile-remote/*，设置接口在中继层显式封禁），比整站暴露更安全。P5 的 `dsh web --host 0.0.0.0` 前提据此作废。
 10. **会话绑定 = 真人输入优先**（阶段 1 实测修正）：`pickSession` 只认 `user/message` 且 `source.kind==='user'` 的事件（真人键盘输入）作为"当前会话"信号，其次会话创建时间；不用"最近事件活跃"——失败重试循环的会话事件流不断，实测会永久霸占绑定并误收 steer。
 11. **审批共存**：phone-push 也在监听 approval/request（waterfall 顺序 = bundle 注册顺序，phone-push 先答）。ntfy 在线时同一审批会双通道推送（ntfy 卡片 + 手机页面审批条），先答者终局、后答者 404——功能不冲突但提示会重复；ntfy 离线时 phone-push 自动回落，单通道无感。手机审批条上的 id 与 ntfy 卡片无关联，属预期。
