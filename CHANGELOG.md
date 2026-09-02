@@ -1,5 +1,49 @@
 # Changelog
 
+## 1.4.0 (2026-09-03)
+
+优化任务 A · 入口与会话组织（优1 + 优3）。前置探针 P10 证实 DSH 官方创建会话 API，
+新建会话按「证实」形态交付；时间线为纯前端重排，后端仅新增 /new 与 /qr.svg 两个路由。
+
+### 探针（P10，随本版本存档）
+
+- **P10 创建会话 API——证实**：`ctx.get('sessionController').create({cwd})`（生产 web UI
+  「新建会话」同一后端）可由插件直调：返回 `{sessionId}`、新会话立即进入 live 注册表
+  （`sessions.list()` / `agents.get(sid)` / `sessionQuery` 三路核对一致）、发出 `session/created`；
+  **全新空闲会话可被既有 steer 路径唤醒出首轮**（实测 5s 内 assistant/message）。
+  结论与证据见 `docs/probe-findings.md` P10 节，探针在 `probe/plugin10/`。
+
+### 新增
+
+- **pair_qr 工具（优1 桌面一键出码）**：在任意会话里让模型调用 `pair_qr` 即出配对卡片——
+  markdown 图片行指向回环 `/mobile-remote/qr.svg?token=`（桌面端渲染为大尺寸二维码 SVG，
+  P6 同构 vendored qrcode-generator 服务端出码）+ 完整链接文本 + 等宽 ASCII 兜底码。
+  新增路由 `/mobile-remote/qr.svg`（token 即门禁，与设置页二维码同内容同级别）；
+  vendored 库移至 `vendor/qrcode-generator.cjs`（MIT 头保留，零依赖）。每次出码写审计 `pair_qr`。
+- **首页时间线视图（优3a）**：首页顶部「按工作区 / 按时间线」分段切换（localStorage 记忆）；
+  时间线按最近活动倒序 + 自然日分组（今天/昨天/周X/完整日期），日期分区卡可折叠；
+  复用任务行构建与 SSE 状态/绑定增量更新通道，**后端零改动**。
+- **新建会话（优3b）**：首页汇总行「＋ 新建」按钮（仅当 `/sessions` 报告 `canNew` 时显示——
+  运行时探测 `sessionController.create` 可用性，P10 未证实形态即自动隐藏，不阻塞其余功能）。
+  `POST /mobile-remote/new`：以当前绑定会话的 cwd 调 `sessionController.create` → 自动切换
+  绑定并钉住（决策 13）→ 页面切入会话视图，发首条消息即走既有 steer 路径唤醒全新会话。
+  宿主缺失该服务时返回 501 `new-unavailable`（如实报错，不静默失败）；每次写审计 `session_new`。
+
+### 取舍说明
+
+- 配对链接全文随 pair_qr 出码进入会话日志（模型回复需含图片行/链接）——与设置页展示同级别
+  的既定取舍；会话日志不出本机。
+- 不做（本轮明确排除）：搜索/筛选/会话归档删除、系统托盘、桌面快捷方式、设置页二维码改动。
+
+### 自检与验收
+
+- smoke-phase4 扩至 42 项（时间线 D14–D16 共 9 项 + /new E3–E5 共 5 项），
+  phase2 26 项 + phase5 19 项回归全绿；`node --check` 通过。
+- 真机验收清单（待手机配合回填）：① 会话内调 pair_qr 出码 → 手机扫码可进；
+  ② 时间线切换数据与工作区视图一致、分段记忆跨重载保持；③ ＋新建 → 手机发首条消息
+  成功且桌面端可见新会话；④ 停用零影响回归。
+
+
 ## 1.3.0 (2026-09-02)
 
 阶段 5 · 底栏运行时控件（5a 探针 + 5b 实现一个任务完成）。本轮按收紧范围交付：
