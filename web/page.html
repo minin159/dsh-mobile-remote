@@ -228,15 +228,15 @@
     padding: 7px 12px; border-top: 1px solid rgba(220,38,38,.35);
   }
   body.view-chat.shield-allow #shieldBanner { display: block; }
-  /* 盾牌档位选择弹层（底部动作面板） */
-  #shieldSheet {
+  /* 盾牌档位选择弹层（底部动作面板）；优2 模型弹层共用同一套面板样式 */
+  #shieldSheet, #modelSheet {
     display: none; position: fixed; left: 0; right: 0; bottom: 0; z-index: 45;
     background: var(--panel); border-top: 1px solid var(--line);
     border-radius: 14px 14px 0 0; padding: 14px 14px calc(14px + env(safe-area-inset-bottom));
     box-shadow: 0 -4px 18px rgba(0,0,0,.18);
   }
-  #shieldSheet.show { display: block; }
-  #shieldSheet h3 { margin: 0 0 10px; font-size: 13.5px; color: var(--muted); font-weight: 600; }
+  #shieldSheet.show, #modelSheet.show { display: block; }
+  #shieldSheet h3, #modelSheet h3 { margin: 0 0 10px; font-size: 13.5px; color: var(--muted); font-weight: 600; }
   .shieldOpt {
     display: block; width: 100%; text-align: left; margin: 8px 0;
     border: 1px solid var(--line); border-radius: 10px; background: var(--bg);
@@ -246,10 +246,14 @@
   .shieldOpt.cur { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
   .shieldOpt.danger { color: var(--bad); }
   .shieldOpt.danger small { color: var(--bad); opacity: .8; }
-  #shieldCancel {
+  #shieldCancel, #modelCancel {
     display: block; width: 100%; margin-top: 10px; border: 0; background: transparent;
     color: var(--muted); font-size: 13.5px; padding: 9px;
   }
+  /* 优2 模型弹层：当前模型行 + 分组标题 */
+  #modelCur { font-size: 12.5px; color: var(--ink); margin-bottom: 2px; }
+  #modelNote { font-size: 11.5px; color: var(--muted); margin-bottom: 8px; line-height: 1.5; }
+  .modelGroup { font-size: 11.5px; color: var(--muted); margin: 10px 0 2px; letter-spacing: .02em; }
   #hintBar { text-align: center; font-size: 12px; color: var(--muted); padding: 18px 20px; line-height: 1.7; }
   /* 轻提示 */
   #toast {
@@ -328,9 +332,19 @@
   <footer id="composer">
     <textarea id="input" rows="1" placeholder="发消息给当前会话…"></textarea>
     <button id="shieldBtn" class="barBtn" aria-label="权限模式">🛡</button>
+    <button id="modelBtn" class="barBtn" aria-label="模型" style="display:none">🧊</button>
     <button id="ctxBtn" class="barBtn" aria-label="上下文用量">◐ —</button>
     <button id="sendBtn" aria-label="发送">↑</button>
   </footer>
+</div>
+
+<!-- 模型选择弹层（优2）：目录来自官方 llm 服务，切换走官方 selectModel（P8 唯一证实路径） -->
+<div id="modelSheet">
+  <h3>模型</h3>
+  <div id="modelCur">读取中…</div>
+  <div id="modelNote">对绑定会话下一回合生效（不打断进行中的回合）；官方机制会同时把它设为电脑端默认模型。</div>
+  <div id="modelList"></div>
+  <button id="modelCancel">取消</button>
 </div>
 
 <!-- 盾牌档位选择弹层 -->
@@ -1007,6 +1021,85 @@ function postJSON(path, body) {
   }).then(function (r) { return r.json(); });
 }
 
+// ── 优2：模型切换真控件（P8 官方路径）─────────────────────────────────────
+// 键显隐由 /sessions 的 canModel 能力位驱动（宿主缺 sessionController 时隐藏，优3b 同款）。
+// 弹层每次打开实时 GET /model（目录 + 当前模型），点选 POST 官方 selectModel，下一回合生效。
+var modelBtn = $('modelBtn');
+var modelSheet = $('modelSheet');
+var modelPicking = false; // 防连点
+function modelLabel(sel) { return sel ? sel.provider + ' / ' + sel.model : ''; }
+function showModelBtn(v) { modelBtn.style.display = v ? '' : 'none'; }
+modelBtn.addEventListener('click', openModelSheet);
+$('modelCancel').addEventListener('click', function () { modelSheet.classList.remove('show'); });
+function openModelSheet() {
+  if (modelSheet.classList.contains('show')) return;
+  $('modelCur').textContent = '读取中…';
+  $('modelList').innerHTML = '';
+  modelSheet.classList.add('show');
+  fetch('/mobile-remote/model?token=' + encodeURIComponent(token))
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      if (handleAuthCode(d && d.code)) { modelSheet.classList.remove('show'); return; }
+      if (!(d && d.ok)) {
+        modelSheet.classList.remove('show');
+        toast('模型列表加载失败：' + ((d && d.message) || '未知错误'));
+        return;
+      }
+      renderModelSheet(d);
+    })
+    .catch(function () { modelSheet.classList.remove('show'); toast('网络错误'); });
+}
+function renderModelSheet(d) {
+  var cur = d.current || null;
+  $('modelCur').textContent = cur ? '当前：' + modelLabel(cur) : '当前：跟随电脑端默认（未读到会话模型）';
+  var list = $('modelList');
+  list.innerHTML = '';
+  if (!d.canSwitch) {
+    list.appendChild(sysLine('当前 DSH 实例不支持切换模型'));
+    return;
+  }
+  var groups = d.providers || [];
+  for (var g = 0; g < groups.length; g++) {
+    var grp = groups[g] || {};
+    var models = grp.models || [];
+    if (models.length === 0) continue;
+    var head = document.createElement('div');
+    head.className = 'modelGroup';
+    head.textContent = grp.name || grp.id;
+    list.appendChild(head);
+    for (var i = 0; i < models.length; i++) {
+      appendModelOption(list, grp.id, models[i], cur);
+    }
+  }
+  if (list.childElementCount === 0) list.appendChild(sysLine('模型目录为空'));
+}
+/** 单个模型选项：当前生效项高亮；点选即对绑定会话切换（官方 selectModel）。 */
+function appendModelOption(list, providerId, m, cur) {
+  var mid = m && m.id ? m.id : '';
+  if (!mid) return;
+  var btn = document.createElement('button');
+  btn.className = 'shieldOpt' + (cur && cur.provider === providerId && cur.model === mid ? ' cur' : '');
+  btn.textContent = (m.name && m.name !== mid) ? (m.name + '（' + mid + '）') : mid;
+  btn.addEventListener('click', function () { pickModel(providerId, mid); });
+  list.appendChild(btn);
+}
+function pickModel(provider, model) {
+  if (modelPicking) return;
+  modelPicking = true;
+  postJSON('/mobile-remote/model', { token: token, provider: provider, model: model })
+    .then(function (r) {
+      modelPicking = false;
+      if (handleAuthCode(r && r.code)) return;
+      if (r && r.ok) {
+        modelSheet.classList.remove('show');
+        toast('已切换：' + modelLabel(r.selected) + '，下一回合生效');
+      } else {
+        toast((r && r.message) || '切换失败');
+      }
+    })
+    .catch(function () { modelPicking = false; toast('网络错误'); });
+}
+
 // ── 视图切换（阶段 4）：首页 ↔ 会话，双向保存/恢复滚动位置 ───────────────
 function showView(name) {
   var prev = state.view;
@@ -1078,6 +1171,7 @@ function fetchSessions(force) {
       if (d && d.ok) {
         state.pinned = (d.pinnedSession || null);
         $('newBtn').style.display = d.canNew ? '' : 'none'; // 优3b：能力探测显隐
+        showModelBtn(d.canModel === true); // 优2：模型键能力探测显隐
         ingestSessions(d.sessions || []);
         renderFollowRow();
         if (state.view === 'home') renderHome();

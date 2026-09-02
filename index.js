@@ -19,6 +19,7 @@
  *   exact  /mobile-remote/sessions  会话列表（阶段 2，GET ?token=）
  *   exact  /mobile-remote/switch    切换绑定会话（阶段 2，POST {token,sessionId}）
  *   exact  /mobile-remote/new       新建会话并钉住（优3b，POST {token}）
+ *   exact  /mobile-remote/model     模型目录（GET ?token=）与切换（POST {token,provider,model}，优2）
  *   exact  /mobile-remote/paircheck 配对状态探测（阶段 2，GET ?token=，供页面判失效原因）
  *   exact  /mobile-remote/qr.svg    配对二维码 SVG（优1，GET ?token=，桌面端会话内出码用）
  *   prefix /mobile-remote/          移动端单页（/p/<token>，token 即路径段，错码 401）
@@ -61,6 +62,7 @@ const ROUTE_PAIRCHECK = '/mobile-remote/paircheck';
 const ROUTE_SHIELD = '/mobile-remote/shield';
 const ROUTE_QR = '/mobile-remote/qr.svg'; // 配对二维码 SVG（token 即门禁，优1 pair_qr 配套）
 const ROUTE_NEW = '/mobile-remote/new';   // 新建会话（优3b，P10 证实 sessionController.create）
+const ROUTE_MODEL = '/mobile-remote/model'; // 模型目录 + 切换（优2，P8 证实官方路径 selectModel）
 const ROUTE_PREFIX = '/mobile-remote/';
 
 // 盾牌（阶段 5）：访问权限三档，会话级临时状态（仅存内存，重启/停止远程回到 'ask'）。
@@ -605,6 +607,44 @@ export function apply(ctx, config) {
     } catch {
       return false;
     }
+  }
+
+  // ── 优2 模型切换：官方路径（P8 唯一证实路径，自实现 waterfall 改写禁止尝试）──
+  /** llm 服务（模型目录数据源：listProviders/listModels；P8 实测可达）。 */
+  function llmService() {
+    try {
+      const llm = ctx.get('llm');
+      return llm && typeof llm === 'object' ? llm : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** 宿主是否具备官方切换能力（P8：sessionController.selectModel，web 组合挂载）。 */
+  function canSwitchModel() {
+    try {
+      const sc = ctx.get('sessionController');
+      return Boolean(sc && typeof sc.selectModel === 'function');
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * 读绑定会话当前生效模型（P8 实测双路同源：session.requestHeader().config）。
+   * 读不到（会话已结束/代理缺失/无绑定）返回 null——前端显示"跟随默认"，不猜测。
+   */
+  function currentModelOf() {
+    if (!boundSid) return null;
+    try {
+      const agents = ctx.get('agents');
+      const agent = agents && typeof agents.get === 'function' ? agents.get(boundSid) : undefined;
+      const cfg = agent?.session?.requestHeader?.()?.config;
+      if (cfg && cfg.provider && cfg.model) {
+        return { provider: String(cfg.provider), model: String(cfg.model) };
+      }
+    } catch {}
+    return null;
   }
 
   /** 电脑端"停止远程"：断开所有手机连接，挂起审批立即回落。 */
@@ -1504,6 +1544,7 @@ export function apply(ctx, config) {
             boundSession: boundSid,
             pinnedSession: pinnedSid,
             canNew: canNewSession(), // 优3b：页面据此显隐「＋新建」
+            canModel: canSwitchModel(), // 优2：页面据此显隐「🧊 模型」键
           });
         },
       });
@@ -1568,6 +1609,121 @@ export function apply(ctx, config) {
           console.log(PLUGIN_TAG, '新建会话', sid + (cwd ? ' cwd=' + cwd : ''));
           audit('session_new', { from: fromSid, sid, cwd });
           sendJson(res, 200, { ok: true, sessionId: sid, cwd, live: true });
+        },
+      });
+
+      // 6c) 模型目录 + 切换（优2）：目录来自官方 llm 服务（listProviders/listModels），
+      //     切换只走官方 sessionController.selectModel（P8 证实路径；自实现改写实测未落地，禁止）。
+      //     已知副作用如实透出：官方路径会把选择同步保存为电脑端全局默认模型
+      //     （agentDefaultModel.saveSelection，P8 源码实证），弹层内有明示。
+      reg({
+        kind: 'exact',
+        path: ROUTE_MODEL,
+        handler: async (req, res) => {
+          if (!st().enabled) {
+            sendJson(res, 404, { ok: false, code: 'disabled', message: '远程控制未开启' });
+            return;
+          }
+          // ── GET：目录 + 当前模型（弹层数据源）──
+          if (req.method === 'GET') {
+            ensureRelay(); // 中继自愈
+            const url = new URL(req.url, 'http://x');
+            const modelReject = tokenRejectReason(url.searchParams.get('token') || '');
+            if (modelReject) {
+              sendJson(res, 401, {
+                ok: false,
+                code: modelReject,
+                message: modelReject === 'token-expired' ? '配对已过期，请在电脑端重新生成' : '配对码无效',
+              });
+              return;
+            }
+            const providers = [];
+            const llm = llmService();
+            if (llm && typeof llm.listProviders === 'function') {
+              try {
+                const provs = await llm.listProviders();
+                for (const p of Array.isArray(provs) ? provs : []) {
+                  const pid = p && p.id !== undefined && p.id !== null ? String(p.id) : '';
+                  if (!pid) continue;
+                  const group = {
+                    id: pid,
+                    name: p && typeof p.name === 'string' && p.name ? p.name : pid,
+                    models: [],
+                  };
+                  try {
+                    if (typeof llm.listModels === 'function') {
+                      const models = await llm.listModels(pid);
+                      for (const m of Array.isArray(models) ? models : []) {
+                        // 适配器返回形状为 {id, name}（P8 实测），字符串形态防御兼容。
+                        const mid = typeof m === 'string' ? m : (m && m.id !== undefined ? String(m.id) : '');
+                        if (!mid) continue;
+                        group.models.push({
+                          id: mid,
+                          name: typeof m === 'object' && m && typeof m.name === 'string' && m.name ? m.name : mid,
+                        });
+                      }
+                    }
+                  } catch {}
+                  providers.push(group);
+                }
+              } catch {}
+            }
+            const current = currentModelOf(); // 读不到 = null → 前端显示"跟随默认"
+            sendJson(res, 200, { ok: true, canSwitch: canSwitchModel(), current, providers });
+            return;
+          }
+          if (req.method !== 'POST') {
+            sendJson(res, 405, { ok: false, code: 'method-not-allowed', message: 'GET or POST' });
+            return;
+          }
+          // ── POST：切换绑定会话的模型（不做自定义模型名/批量生效/参数编辑，见任务范围）──
+          let parsed;
+          try {
+            parsed = await readJson(req, 2 * 1024);
+          } catch (error) {
+            sendJson(res, 400, { ok: false, code: 'invalid-request', message: msgOf(error) });
+            return;
+          }
+          const modelPostReject = tokenRejectReason(String(parsed.token || ''));
+          if (modelPostReject) {
+            sendJson(res, 401, {
+              ok: false,
+              code: modelPostReject,
+              message: modelPostReject === 'token-expired' ? '配对已过期，请在电脑端重新生成' : '配对码无效',
+            });
+            return;
+          }
+          if (!boundSid) {
+            sendJson(res, 409, { ok: false, code: 'no-session', message: '尚未绑定会话，先选择会话再切模型' });
+            return;
+          }
+          const provider = typeof parsed.provider === 'string' ? parsed.provider.trim() : '';
+          const model = typeof parsed.model === 'string' ? parsed.model.trim() : '';
+          if (!provider || !model || provider.length > 80 || model.length > 120) {
+            sendJson(res, 400, { ok: false, code: 'bad-model', message: 'provider/model 为必填且过长' });
+            return;
+          }
+          const sc = ctx.get('sessionController');
+          if (!sc || typeof sc.selectModel !== 'function') {
+            sendJson(res, 501, { ok: false, code: 'switch-unavailable', message: '当前 DSH 实例不支持切换模型（需 web 组合挂载 sessionController）' });
+            return;
+          }
+          const from = currentModelOf();
+          try {
+            const out = await sc.selectModel({ sessionId: boundSid, provider, model });
+            const selected = out && out.selected ? out.selected : { provider, model };
+            audit('model_switch', {
+              sid: boundSid,
+              from: from ? from.provider + '/' + from.model : '',
+              to: selected.provider + '/' + selected.model,
+            });
+            console.log(PLUGIN_TAG, '模型已切换 →', selected.provider + '/' + selected.model, 'sid=' + boundSid);
+            sendJson(res, 200, { ok: true, selected: { provider: selected.provider, model: selected.model } });
+          } catch (error) {
+            // 官方校验拒绝（模型不存在/不可用等）：如实透传宿主信息，不静默
+            audit('model_switch', { sid: boundSid, to: provider + '/' + model, ok: false, err: clip(msgOf(error), 120) });
+            sendJson(res, 502, { ok: false, code: 'switch-failed', message: '切换失败：' + msgOf(error) });
+          }
         },
       });
 

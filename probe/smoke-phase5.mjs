@@ -115,7 +115,7 @@ const page = res.body();
 check('5.1a 页面含盾牌键/弹层/警示条/上下文键', page.includes('id="shieldBtn"') && page.includes('id="shieldSheet"')
   && page.includes('id="shieldBanner"') && page.includes('id="ctxBtn"'));
 check('5.1b 发送键为 ↑ 形态', page.includes('id="sendBtn"') && page.includes('aria-label="发送"') && page.includes('>↑<'));
-check('5.1c 模型/思考键未渲染（探针降级）', !page.includes('id="modelBtn"') && !page.includes('id="thinkBtn"'));
+check('5.1c 思考键未渲染；模型键已由优2 转为真控件（形态见 smoke-opt2）', !page.includes('id="thinkBtn"') && page.includes('id="modelBtn"'));
 check('5.1d 放行警示文案常驻条', page.includes('全部放行——工具操作将自动允许'));
 
 // 5.2 SSE 建连：hello 帧带 shield 档位（默认 ask）
