@@ -61,6 +61,11 @@
   #refreshBtn { border: 1px solid var(--line); background: var(--panel); color: var(--ink);
     border-radius: 999px; font-size: 13px; padding: 6px 14px; flex-shrink: 0; }
   #refreshBtn:disabled { opacity: .5; }
+  /* 首页视图分段切换（优3）：按工作区 / 按时间线 */
+  #segRow { display: flex; gap: 8px; padding: 2px 14px 4px; }
+  .segBtn { border: 1px solid var(--line); background: var(--panel); color: var(--muted);
+    border-radius: 999px; font-size: 12.5px; padding: 5px 14px; }
+  .segBtn.on { background: var(--accent); border-color: var(--accent); color: #fff; }
   #introCard { display: flex; gap: 8px; align-items: flex-start; margin: 6px 10px;
     padding: 10px 12px; background: var(--panel); border: 1px solid var(--line);
     border-radius: 12px; font-size: 12.5px; color: var(--muted); line-height: 1.6; }
@@ -300,6 +305,10 @@
     </div>
     <button id="refreshBtn">刷新</button>
   </div>
+  <div id="segRow">
+    <button id="segWs" class="segBtn on">按工作区</button>
+    <button id="segTime" class="segBtn">按时间线</button>
+  </div>
   <div id="introCard">
     <div id="introText">本次连接可以查看电脑端 DSH 的会话列表与实时消息流，也可以发送消息、审批权限请求。配对码失效后，请回到电脑端设置页重新生成配对码，再用新链接打开本页。</div>
     <button id="introClose" aria-label="关闭说明">✕</button>
@@ -368,6 +377,7 @@ var state = {
   rowRows: {},               // sid → 任务行元素（绑定高亮增量更新）
   pinned: null,              // 手机端钉住的会话（非空时首页显示"跟随电脑"入口）
   foldMap: {},               // 折叠的工作区 cwd → true（localStorage 持久化）
+  homeMode: 'ws',            // 首页视图（优3）：'ws'=按工作区 / 'time'=按时间线
   lastHomeFetch: 0,          // 首页数据节流（3s）
   lastAction: null,          // 最新 tool/call 摘要（当前动作 pill）
   // ── 阶段 5：底栏运行时控件 ──
@@ -1136,11 +1146,101 @@ function renderHome() {
     homeListEl.appendChild(sysLine('暂无会话：电脑端产生会话后会出现在这里'));
     return;
   }
-  var groups = groupSessions(list);
-  for (var g = 0; g < groups.length; g++) homeListEl.appendChild(buildWsCard(groups[g]));
-  $('sumCount').textContent = groups.length + ' 个工作区 · ' + list.length + ' 个任务';
+  if (state.homeMode === 'time') {
+    // 时间线（优3）：纯前端重排同一份数据，后端零改动
+    var days = timeSessions(list);
+    for (var d = 0; d < days.length; d++) homeListEl.appendChild(buildDayCard(days[d]));
+    $('sumCount').textContent = list.length + ' 个任务 · ' + days.length + ' 天内有活动';
+  } else {
+    var groups = groupSessions(list);
+    for (var g = 0; g < groups.length; g++) homeListEl.appendChild(buildWsCard(groups[g]));
+    $('sumCount').textContent = groups.length + ' 个工作区 · ' + list.length + ' 个任务';
+  }
   homeEl.scrollTop = Math.min(keep, homeEl.scrollHeight);
 }
+/** 自然日标签：今天/昨天/近一周（周X）/更早用完整日期。 */
+function fmtDayLabel(ts) {
+  var d = new Date(ts);
+  var now = new Date();
+  var midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  var day = 24 * 3600 * 1000;
+  var md = (d.getMonth() + 1) + '月' + d.getDate() + '日';
+  if (ts >= midnight) return '今天 · ' + md;
+  if (ts >= midnight - day) return '昨天 · ' + md;
+  if (ts >= midnight - 6 * day) return ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][d.getDay()] + ' · ' + md;
+  return d.getFullYear() + '年' + md;
+}
+/** 时间线分组（优3）：全部会话按最近活动倒序，按自然日分组；纯前端重排现有数据。 */
+function timeSessions(list) {
+  var arr = list.slice();
+  arr.sort(function (a, b) {
+    return (b.lastAt || b.humanAt || b.createdAt || 0) - (a.lastAt || a.humanAt || a.createdAt || 0);
+  });
+  var groups = [];
+  var byDay = {};
+  for (var i = 0; i < arr.length; i++) {
+    var it = arr[i];
+    var t = it.lastAt || it.humanAt || it.createdAt || 0;
+    var label = t ? fmtDayLabel(t) : '日期未知';
+    var g = byDay[label];
+    if (!g) { g = { label: label, items: [] }; byDay[label] = g; groups.push(g); }
+    g.items.push(it); // arr 已倒序，组内自然保持倒序
+  }
+  return groups;
+}
+/** 时间线日期分区卡：头部（日期 + 任务数 + 折叠）+ 任务行；折叠键 day:<标签>。 */
+function buildDayCard(g) {
+  var card = document.createElement('div');
+  card.className = 'wsCard';
+  var head = document.createElement('div');
+  head.className = 'wsHead';
+  var main = document.createElement('div');
+  main.className = 'wsMain';
+  var nm = document.createElement('div');
+  nm.className = 'wsName';
+  nm.textContent = g.label;
+  main.appendChild(nm);
+  var side = document.createElement('div');
+  side.className = 'wsSide';
+  var cnt = document.createElement('div');
+  cnt.className = 'wsCount';
+  cnt.textContent = g.items.length + ' 个任务';
+  side.appendChild(cnt);
+  var chev = document.createElement('span');
+  chev.className = 'wsChevron';
+  chev.textContent = '▾';
+  head.appendChild(main);
+  head.appendChild(side);
+  head.appendChild(chev);
+  var body = document.createElement('div');
+  body.className = 'wsBody';
+  for (var i = 0; i < g.items.length; i++) body.appendChild(buildTaskRow(g.items[i]));
+  card.appendChild(head);
+  card.appendChild(body);
+  var key = 'day:' + g.label;
+  if (state.foldMap[key]) {
+    card.classList.add('folded');
+    chev.textContent = '▸';
+  }
+  head.addEventListener('click', function () {
+    var folded = card.classList.toggle('folded');
+    chev.textContent = folded ? '▸' : '▾';
+    if (folded) state.foldMap[key] = true;
+    else delete state.foldMap[key];
+    saveFolds();
+  });
+  return card;
+}
+/** 首页视图切换（优3）：记忆到 localStorage，切换即重建列表。 */
+function setHomeMode(mode, skipRender) {
+  state.homeMode = mode === 'time' ? 'time' : 'ws';
+  $('segWs').classList.toggle('on', state.homeMode !== 'time');
+  $('segTime').classList.toggle('on', state.homeMode === 'time');
+  try { localStorage.setItem('mr-home-mode', state.homeMode); } catch (e) {}
+  if (!skipRender && state.view === 'home') renderHome();
+}
+$('segWs').addEventListener('click', function () { setHomeMode('ws'); });
+$('segTime').addEventListener('click', function () { setHomeMode('time'); });
 function buildWsCard(g) {
   var card = document.createElement('div');
   card.className = 'wsCard';
@@ -1478,6 +1578,10 @@ if (!token) {
       if (typeof folds[fi] === 'string') state.foldMap[folds[fi]] = true;
     }
   } catch (e) {}
+  // 首页视图恢复（优3）：上次用的时间线/工作区视图跨重载保持
+  var savedMode = 'ws';
+  try { savedMode = localStorage.getItem('mr-home-mode') === 'time' ? 'time' : 'ws'; } catch (e) {}
+  setHomeMode(savedMode, true);
   // 首次进入说明卡：关闭一次后不再出现（一次性）
   var introDismissed = false;
   try { introDismissed = localStorage.getItem('mr-intro') === '1'; } catch (e) {}

@@ -253,6 +253,60 @@ check('D1b 双视图关键元素齐备（页面可访问）',
   check('D13b 任务行四态胶囊与绑定行', chip1 && chip1.textContent === '运行中' && chip1.className.includes('run')
     && sandbox.state.rowRows.s1.className.includes('bound'));
 }
+// D14 时间线分组（优3）：倒序 + 自然日分组 + 组内保持倒序
+{
+  // 用「今天中午」为锚点构造时间戳，避免测试在凌晨运行时「昨天」漂移
+  const nowBase = new Date();
+  const noon = new Date(nowBase.getFullYear(), nowBase.getMonth(), nowBase.getDate(), 12).getTime();
+  const day = 86400 * 1000;
+  const groups = sandbox.timeSessions([
+    { id: 't1', lastAt: noon - 2 * 3600 * 1000, createdAt: 1 },   // 今天
+    { id: 't2', lastAt: noon - 1 * day, createdAt: 2 },           // 昨天
+    { id: 't3', lastAt: noon - 1 * 3600 * 1000, createdAt: 3 },   // 今天（排 t1 前）
+    { id: 't4', lastAt: noon - 9 * day, createdAt: 4 },           // 更早
+    { id: 't5' },                                                 // 无任何时间 → 日期未知
+  ]);
+  check('D14 时间线分组顺序（倒序、无时间垫底）',
+    groups.length === 4 && groups[0].items.map((i) => i.id).join(',') === 't3,t1'
+      && groups[3].label === '日期未知',
+    JSON.stringify(groups.map((g) => [g.label, g.items.map((i) => i.id)])));
+  check('D14b 今天组标签', /^今天 · \d+月\d+日$/.test(groups[0].label), groups[0].label);
+  check('D14c 昨天组标签', /^昨天 · \d+月\d+日$/.test(groups[1].label), groups[1].label);
+  check('D14d 更早组标签（周X 或完整日期）',
+    /^(周[一二三四五六日] · \d+月\d+日|\d{4}年\d+月\d+日)$/.test(groups[2].label), groups[2].label);
+}
+// D15 fmtDayLabel 档位：近一周用周X，更早用完整年月日
+{
+  const now = Date.now();
+  const day = 86400 * 1000;
+  check('D15 近一周用周X', /^(周[一二三四五六日]) · \d+月\d+日$/.test(sandbox.fmtDayLabel(now - 3 * day)),
+    sandbox.fmtDayLabel(now - 3 * day));
+  check('D15b 更早用完整日期', /^\d{4}年\d+月\d+日$/.test(sandbox.fmtDayLabel(now - 40 * day)),
+    sandbox.fmtDayLabel(now - 40 * day));
+}
+// D16 setHomeMode 切换 + 时间线 renderHome 全链路（分段高亮/汇总行/任务行增量注册）
+{
+  sandbox.state.sessionsById = {
+    s1: { id: 's1', cwd: 'D:/w/alpha', status: 'running', lastAt: Date.now(), createdAt: 1 },
+    s2: { id: 's2', cwd: 'D:/w/beta', status: 'idle', lastAt: Date.now() - 30 * 1000, createdAt: 2 },
+  };
+  sandbox.state.homeDirty = true;
+  sandbox.setHomeMode('time');
+  let threw = '';
+  try { sandbox.renderHome(); } catch (e) { threw = String(e); }
+  const homeList = byId.homeList;
+  const cards = homeList.children.filter((c) => c.className === 'wsCard');
+  const sumText = byId.sumCount.textContent;
+  check('D16 时间线 renderHome（日期卡 + 汇总行）', threw === '' && cards.length === 1
+    && sumText === '2 个任务 · 1 天内有活动' && byId.segTime.classList.contains('on'),
+    (threw || 'cards=' + cards.length + ' sum=' + sumText));
+  check('D16b 时间线任务行注册增量更新通道', !!sandbox.state.rowChips.s1 && !!sandbox.state.rowRows.s2);
+  sandbox.setHomeMode('ws');
+  sandbox.state.homeDirty = true;
+  sandbox.renderHome();
+  check('D16c 切回工作区视图恢复原汇总行', byId.sumCount.textContent === '2 个工作区 · 2 个任务'
+    && byId.segWs.classList.contains('on') && !byId.segTime.classList.contains('on'));
+}
 
 // ── E 组：后端 /sessions 补 lastAt ─────────────────────────────────────────
 console.log('\n[E] 后端 /sessions（mock ctx）');
