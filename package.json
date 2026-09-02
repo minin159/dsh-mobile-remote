@@ -10,6 +10,7 @@
     "index.js",
     "client.js",
     "web",
+    "vendor",
     "cordis.patch.yml",
     "README.md",
     "CHANGELOG.md",

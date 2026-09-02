@@ -19,6 +19,7 @@
  *   exact  /mobile-remote/sessions  会话列表（阶段 2，GET ?token=）
  *   exact  /mobile-remote/switch    切换绑定会话（阶段 2，POST {token,sessionId}）
  *   exact  /mobile-remote/paircheck 配对状态探测（阶段 2，GET ?token=，供页面判失效原因）
+ *   exact  /mobile-remote/qr.svg    配对二维码 SVG（优1，GET ?token=，桌面端会话内出码用）
  *   prefix /mobile-remote/          移动端单页（/p/<token>，token 即路径段，错码 401）
  *
  * 安全模型：
@@ -40,6 +41,9 @@ import { appendFile, mkdir, rename, stat } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { homedir, networkInterfaces } from 'node:os';
 import { createServer as createRelayServer, request as httpRequest } from 'node:http';
+// vendored MIT qrcode-generator 1.4.4（Kazuhiko Arase；probe/p6-qrcode-generator.js 原样副本，
+// .cjs 使 ESM 侧 default import 直接拿到构造器）。pair_qr 工具与 /qr.svg 路由共用（优1）。
+import qrcodeLib from './vendor/qrcode-generator.cjs';
 
 export const name = 'mobile-remote';
 
@@ -54,6 +58,7 @@ const ROUTE_SESSIONS = '/mobile-remote/sessions';
 const ROUTE_SWITCH = '/mobile-remote/switch';
 const ROUTE_PAIRCHECK = '/mobile-remote/paircheck';
 const ROUTE_SHIELD = '/mobile-remote/shield';
+const ROUTE_QR = '/mobile-remote/qr.svg'; // 配对二维码 SVG（token 即门禁，优1 pair_qr 配套）
 const ROUTE_PREFIX = '/mobile-remote/';
 
 // 盾牌（阶段 5）：访问权限三档，会话级临时状态（仅存内存，重启/停止远程回到 'ask'）。
@@ -837,6 +842,13 @@ export function apply(ctx, config) {
     res.end(html);
   }
 
+  function sendSvg(res, status, svg) {
+    res.statusCode = status;
+    res.setHeader('Content-Type', 'image/svg+xml; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
+    res.end(svg);
+  }
+
   function readJson(req, limit = 64 * 1024) {
     return new Promise((resolvePromise, rejectPromise) => {
       let body = '';
@@ -930,6 +942,80 @@ export function apply(ctx, config) {
       lan,
       tailscale,
     };
+  }
+
+  // ── 配对二维码（优1 pair_qr）：服务端出码，P6 实测形态 ─────────────────────
+  /** 生成二维码矩阵（typeNumber 0 = 自动选版本，M 级纠错，P6 同参）。 */
+  function qrMake(text) {
+    const qr = qrcodeLib(0, 'M');
+    qr.addData(String(text), 'Byte');
+    qr.make();
+    return qr;
+  }
+
+  /** 服务端 SVG（大尺寸卡片主路径）：crispEdges + 4 模块静区，P6 同款结构。 */
+  function qrSvgTag(text, cell = 10, quiet = 4) {
+    const qr = qrMake(text);
+    const n = qr.getModuleCount();
+    const size = (n + quiet * 2) * cell;
+    let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${n + quiet * 2} ${n + quiet * 2}" shape-rendering="crispEdges">`;
+    svg += `<rect width="${n + quiet * 2}" height="${n + quiet * 2}" fill="#ffffff"/>`;
+    svg += `<path fill="#000000" d="`;
+    for (let r = 0; r < n; r++) {
+      for (let c = 0; c < n; c++) {
+        if (qr.isDark(r, c)) svg += `M${c + quiet} ${r + quiet}h1v1h-1z`;
+      }
+    }
+    svg += `"/></svg>`;
+    return svg;
+  }
+
+  /** 等宽文本兜底码（工具卡片 pre 块）：每模块横向 2 字符，近似方形可扫。 */
+  function qrAscii(text) {
+    const qr = qrMake(text);
+    const n = qr.getModuleCount();
+    const quiet = 2;
+    const dark = '██';
+    const light = '  ';
+    const lines = [];
+    for (let r = 0; r < n; r++) {
+      let line = light.repeat(quiet);
+      for (let c = 0; c < n; c++) line += qr.isDark(r, c) ? dark : light;
+      lines.push(line + light.repeat(quiet));
+    }
+    const width = (n + quiet * 2) * 2;
+    const pad = ' '.repeat(width);
+    return [pad, ...lines, pad].join('\n');
+  }
+
+  /**
+   * pair_qr 工具用（无 req 上下文）：手机地址与桌面回环出码地址。
+   * 手机地址优先级与 stateView 一致：publicBase → 中继（LAN）→ 回环兜底。
+   */
+  function pairTargets() {
+    const s = st();
+    const token = String(s.token || '');
+    if (!token) return null;
+    const loopback = `http://127.0.0.1:${upstreamPort()}${ROUTE_PREFIX}p/${token}`;
+    let phone = loopback;
+    let phoneSource = 'loopback';
+    if (s.publicBase) {
+      phone = `${s.publicBase}${ROUTE_PREFIX}p/${token}`;
+      phoneSource = 'publicBase';
+    } else {
+      const { lan } = pickLanAddrs();
+      const relayPort = clampInt(s.relayPort, 0, 65535, DEFAULTS.relayPort);
+      if (lan.length > 0 && relayPort) {
+        phone = `http://${lan[0]}:${relayPort}${ROUTE_PREFIX}p/${token}`;
+        phoneSource = 'relay';
+      }
+    }
+    // 桌面端会话内 markdown 图片必须绝对 http(s) 地址才过 GUI sanitizer——走回环。
+    const qrImageUrl = `http://127.0.0.1:${upstreamPort()}${ROUTE_QR}?token=${token}`;
+    const issued = Date.parse(String(s.tokenIssuedAt || ''));
+    const ttlHours = clampInt(s.pairTtlHours, 0, 8760, DEFAULTS.pairTtlHours);
+    const expiresAt = issued && ttlHours > 0 ? new Date(issued + ttlHours * 3600 * 1000).toISOString() : '';
+    return { token, loopback, phone, phoneSource, qrImageUrl, expiresAt, pairingExpired: pairingExpired() };
   }
 
   // ── 会话列表视图（阶段 2）：全量逻辑会话 + 标题 + 运行态合并 ────────────────
@@ -1521,6 +1607,36 @@ export function apply(ctx, config) {
         },
       });
 
+      // 7b) 配对二维码 SVG（优1 pair_qr 配套）：?token=<配对码>，token 即门禁。
+      //     桌面端会话内 markdown 图片走回环地址加载本路由；手机页面自带客户端出码，
+      //     不依赖此路由。链接内容与设置页二维码一致（phone 地址）。
+      reg({
+        kind: 'exact',
+        path: ROUTE_QR,
+        handler: async (req, res) => {
+          if (req.method !== 'GET' && req.method !== 'HEAD') {
+            sendJson(res, 405, { ok: false, code: 'method-not-allowed', message: 'GET only' });
+            return;
+          }
+          const url = new URL(req.url, 'http://x');
+          const reject = tokenRejectReason(url.searchParams.get('token') || '');
+          if (reject) {
+            sendJson(res, 401, {
+              ok: false,
+              code: reject,
+              message: reject === 'token-expired' ? '配对已过期' : '配对码无效',
+            });
+            return;
+          }
+          const target = pairTargets();
+          if (!target) {
+            sendJson(res, 503, { ok: false, code: 'no-token', message: '配对码未生成' });
+            return;
+          }
+          sendSvg(res, 200, qrSvgTag(target.phone));
+        },
+      });
+
       // 8) 移动端单页：/mobile-remote/p/<token>，token 即路径段，错码 401。
       // 注意宿主 prefix 匹配是 pathname.startsWith(path + '/')（P1 实测），
       // 注册路径不能带尾斜杠，否则变成 /mobile-remote// 永不匹配。
@@ -1604,6 +1720,58 @@ export function apply(ctx, config) {
         reason: 'mobile-remote 审批链路自测（可在手机端允许/拒绝，或等超时回落电脑端）',
       });
       return { ok: outcome === 'allowed-once', outcome: String(outcome) };
+    },
+  });
+
+  // ── 配对二维码工具（优1）：用户在会话里要码即出，免去找设置页 ───────────────
+  // 桌面 GUI 的工具卡片只渲染 pre 文本（附件图仅限 attachment 管线，GUI 源码实查），
+  // 因此呈现分三层：
+  //   主路径 —— 卡片给出 markdown 图片行，指向回环 /qr.svg（绝对 http 地址过
+  //            GUI sanitizer），模型原样嵌入回复后渲染为大尺寸二维码；
+  //   兜底 1 —— 卡片内完整链接文本（手机浏览器直接打开）；
+  //   兜底 2 —— 卡片内等宽 ASCII 码（图片/链接都不可用时）。
+  // 配对链接即密码：其全文随会话日志落盘是本功能的既定取舍（与设置页展示同级别）。
+  ctx.tools.register({
+    name: 'pair_qr',
+    description: '展示「移动端远程控制」的配对二维码与链接（手机扫码或打开链接后，可远程查看当前 DSH 会话流、发消息、审批）。当用户想要配对二维码、配对链接、或要在手机上使用远程控制时调用一次；同一轮对话已成功出码就不要重复调用。',
+    parameters: { type: 'object', additionalProperties: false, properties: {} },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          ok: { type: 'boolean' },
+          url: { type: 'string' },
+          qrImageUrl: { type: 'string' },
+          card: { type: 'string' },
+        },
+        required: ['ok', 'url', 'card'],
+      },
+      render: (_args, value) => [{ type: 'text', text: String(value?.card || '配对码不可用（插件未启用或配对码未生成）') }],
+    },
+    async execute(_args, _exec) {
+      await ready; // settings 就绪后再读配对码
+      await ensureToken(); // 首次调用时自动生成（幂等）
+      const target = pairTargets();
+      if (!target || target.pairingExpired) {
+        return { ok: false, url: '', card: '配对码不可用或已过期：请在电脑端「移动端远程」设置页重新生成配对码后再试。' };
+      }
+      const expiresLine = target.expiresAt ? `\n配对码有效期至：${target.expiresAt.replace('T', ' ').slice(0, 16)}（过期后需在电脑端重新生成）` : '';
+      const card = [
+        '📱 移动端远程控制 · 配对二维码',
+        '',
+        '请在你接下来的回复中原样包含下面这一行（桌面端会渲染为大尺寸二维码图片）：',
+        `![移动端远程配对二维码](${target.qrImageUrl})`,
+        '',
+        `手机打开此链接（或扫码）：${target.phone}`,
+        `地址来源：${target.phoneSource}` + expiresLine,
+        '',
+        '等宽兜底码（图片显示异常时用手机扫）：',
+        qrAscii(target.phone),
+      ].join('\n');
+      audit('pair_qr', { source: target.phoneSource });
+      console.log(PLUGIN_TAG, 'pair_qr 工具已出码 source=' + target.phoneSource);
+      return { ok: true, url: target.phone, qrImageUrl: target.qrImageUrl, card };
     },
   });
 
