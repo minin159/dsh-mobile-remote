@@ -18,6 +18,7 @@
  *   exact  /mobile-remote/approve   手机审批（POST {token,id,decision}）
  *   exact  /mobile-remote/sessions  会话列表（阶段 2，GET ?token=）
  *   exact  /mobile-remote/switch    切换绑定会话（阶段 2，POST {token,sessionId}）
+ *   exact  /mobile-remote/new       新建会话并钉住（优3b，POST {token}）
  *   exact  /mobile-remote/paircheck 配对状态探测（阶段 2，GET ?token=，供页面判失效原因）
  *   exact  /mobile-remote/qr.svg    配对二维码 SVG（优1，GET ?token=，桌面端会话内出码用）
  *   prefix /mobile-remote/          移动端单页（/p/<token>，token 即路径段，错码 401）
@@ -59,6 +60,7 @@ const ROUTE_SWITCH = '/mobile-remote/switch';
 const ROUTE_PAIRCHECK = '/mobile-remote/paircheck';
 const ROUTE_SHIELD = '/mobile-remote/shield';
 const ROUTE_QR = '/mobile-remote/qr.svg'; // 配对二维码 SVG（token 即门禁，优1 pair_qr 配套）
+const ROUTE_NEW = '/mobile-remote/new';   // 新建会话（优3b，P10 证实 sessionController.create）
 const ROUTE_PREFIX = '/mobile-remote/';
 
 // 盾牌（阶段 5）：访问权限三档，会话级临时状态（仅存内存，重启/停止远程回到 'ask'）。
@@ -593,6 +595,16 @@ export function apply(ctx, config) {
     boundSid = sel ? sel.sid : null;
     boundCwd = sel ? (sel.cwd || '') : '';
     if (boundSid) console.log(PLUGIN_TAG, '绑定会话', boundSid);
+  }
+
+  /** 优3b：宿主是否具备创建会话能力（P10：web 组合挂载 sessionController）。 */
+  function canNewSession() {
+    try {
+      const sc = ctx.get('sessionController');
+      return Boolean(sc && typeof sc.create === 'function');
+    } catch {
+      return false;
+    }
   }
 
   /** 电脑端"停止远程"：断开所有手机连接，挂起审批立即回落。 */
@@ -1486,7 +1498,76 @@ export function apply(ctx, config) {
             return;
           }
           const sessions = await listSessionsView();
-          sendJson(res, 200, { ok: true, sessions, boundSession: boundSid, pinnedSession: pinnedSid });
+          sendJson(res, 200, {
+            ok: true,
+            sessions,
+            boundSession: boundSid,
+            pinnedSession: pinnedSid,
+            canNew: canNewSession(), // 优3b：页面据此显隐「＋新建」
+          });
+        },
+      });
+
+      // 6b) 新建会话（优3b）：sessionController.create（P10 证实）→ 自动切入并钉住。
+      //     cwd 沿用当前绑定会话的目录（手机端无目录选择语义，见任务范围：不做工作区选择）。
+      reg({
+        kind: 'exact',
+        path: ROUTE_NEW,
+        handler: async (req, res) => {
+          if (req.method !== 'POST') {
+            sendJson(res, 405, { ok: false, code: 'method-not-allowed', message: 'POST only' });
+            return;
+          }
+          if (!st().enabled) {
+            sendJson(res, 404, { ok: false, code: 'disabled', message: '远程控制未开启' });
+            return;
+          }
+          let parsed;
+          try {
+            parsed = await readJson(req, 2 * 1024);
+          } catch (error) {
+            sendJson(res, 400, { ok: false, code: 'invalid-request', message: msgOf(error) });
+            return;
+          }
+          const newReject = tokenRejectReason(String(parsed.token || ''));
+          if (newReject) {
+            sendJson(res, 401, {
+              ok: false,
+              code: newReject,
+              message: newReject === 'token-expired' ? '配对已过期，请在电脑端重新生成' : '配对码无效',
+            });
+            return;
+          }
+          const sc = ctx.get('sessionController');
+          if (!sc || typeof sc.create !== 'function') {
+            // 宿主未挂 session-controller（非 web 组合/未来版本变更）：如实告知，不静默失败
+            sendJson(res, 501, { ok: false, code: 'new-unavailable', message: '当前 DSH 实例不支持创建会话' });
+            return;
+          }
+          const fromSid = boundSid; // 审计用
+          const cwd = boundCwd || (boundSid ? activity.get(boundSid)?.cwd || '' : '');
+          let created;
+          try {
+            created = await sc.create(cwd ? { cwd } : {});
+          } catch (error) {
+            console.error(PLUGIN_TAG, '新建会话失败:', msgOf(error));
+            sendJson(res, 502, { ok: false, code: 'create-failed', message: '创建会话失败：' + msgOf(error) });
+            return;
+          }
+          const sid = String(created?.sessionId || '');
+          if (!sid) {
+            sendJson(res, 502, { ok: false, code: 'create-failed', message: '创建会话未返回会话标识' });
+            return;
+          }
+          pinnedSid = sid; // 新会话立即钉住（决策 13）：跨重连保持，不被自动挑选顶掉
+          bindSession({ sid, cwd });
+          // 通知页面（switched=true → 页面清空消息流）；新会话暂无历史帧，游标归零即可
+          sendFrame('bound', { sessionId: boundSid, cwd: boundCwd, switched: true, live: true });
+          const conn = activeConn;
+          if (conn) conn.cursorBySid.set(boundSid, 0);
+          console.log(PLUGIN_TAG, '新建会话', sid + (cwd ? ' cwd=' + cwd : ''));
+          audit('session_new', { from: fromSid, sid, cwd });
+          sendJson(res, 200, { ok: true, sessionId: sid, cwd, live: true });
         },
       });
 

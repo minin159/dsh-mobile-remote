@@ -333,6 +333,7 @@ function buildCtx(seed, world) {
     get(name) {
       if (name === 'sessions') return { list: () => world.liveSessions };
       if (name === 'sessionQuery') return world.sessionQuery || null;
+      if (name === 'sessionController') return world.sessionController || null;
       if (name === 'agents') {
         return {
           roots: () => world.liveSessions.map((s) => ({ session: { header: { id: s.header.id, createdAt: s.header.createdAt, cwd: s.header.cwd } } })),
@@ -358,7 +359,21 @@ const world = {
   steered: [],
 };
 const E = buildCtx({ enabled: true, token: 'testtoken123', relayPort: 0 }, world);
-function mockReq(url) { return { method: 'GET', url, headers: { host: '127.0.0.1' } }; }
+function mockReq(url, method = 'GET', body = null) {
+  const ev = new Map();
+  const req = {
+    url, method,
+    headers: { host: '127.0.0.1' },
+    on(type, cb) { ev.set(type, cb); return req; },
+  };
+  queueMicrotask(() => {
+    try {
+      if (body) ev.get('data')?.(Buffer.from(JSON.stringify(body)));
+      ev.get('end')?.();
+    } catch (e) { console.error('mockReq emit error:', e); }
+  });
+  return req;
+}
 function mockRes() {
   return { statusCode: 0, body: null, writeHead(c) { this.statusCode = c; }, setHeader() {}, end(b) { this.body = b || ''; } };
 }
@@ -379,6 +394,42 @@ const a = j1.sessions.find((s) => s.id === 'session-e4a');
 const b2 = j1.sessions.find((s) => s.id === 'session-e4b');
 check('E2 事件后 lastAt 更新（仅活跃会话）', a && a.lastAt > 0 && b2 && b2.lastAt === 0,
   JSON.stringify({ a: a?.lastAt, b: b2?.lastAt }));
+
+// E3 优3b：无 sessionController → canNew=false，/new 返回 501（不静默失败）
+{
+  const resS = mockRes();
+  await E.routes.get('/mobile-remote/sessions')(mockReq('/mobile-remote/sessions?token=testtoken123'), resS);
+  check('E3 无控制器 canNew=false', JSON.parse(resS.body).canNew === false);
+  const resN = mockRes();
+  await E.routes.get('/mobile-remote/new')(mockReq('/mobile-remote/new', 'POST', { token: 'testtoken123' }), resN);
+  check('E3b /new 无控制器 → 501 new-unavailable', resN.statusCode === 501 && JSON.parse(resN.body).code === 'new-unavailable',
+    resN.statusCode + ' ' + resN.body);
+}
+// E4 优3b：有控制器 → create 调用 + 自动钉住 + canNew=true
+{
+  const calls = [];
+  world.sessionController = { create: async (req) => { calls.push(req); return { sessionId: 'session-new-1' }; } };
+  const resN = mockRes();
+  await E.routes.get('/mobile-remote/new')(mockReq('/mobile-remote/new', 'POST', { token: 'testtoken123' }), resN);
+  const jn = JSON.parse(resN.body);
+  check('E4 /new 创建并返回会话', resN.statusCode === 200 && jn.ok === true && jn.sessionId === 'session-new-1' && jn.live === true,
+    resN.statusCode + ' ' + resN.body);
+  check('E4b 无绑定 cwd 时以空请求创建', calls.length === 1 && calls[0] !== undefined && calls[0].cwd === undefined,
+    JSON.stringify(calls));
+  const resS = mockRes();
+  await E.routes.get('/mobile-remote/sessions')(mockReq('/mobile-remote/sessions?token=testtoken123'), resS);
+  const js = JSON.parse(resS.body);
+  check('E4c canNew=true 且 pinned=新会话', js.canNew === true && js.pinnedSession === 'session-new-1',
+    JSON.stringify({ canNew: js.canNew, pinned: js.pinnedSession }));
+  // E5 优3b：先切到带 cwd 的会话，新建应沿用其目录（P10：create({cwd})）
+  const resSw = mockRes();
+  await E.routes.get('/mobile-remote/switch')(mockReq('/mobile-remote/switch', 'POST', { token: 'testtoken123', sessionId: 'session-e4a' }), resSw);
+  const resN2 = mockRes();
+  await E.routes.get('/mobile-remote/new')(mockReq('/mobile-remote/new', 'POST', { token: 'testtoken123' }), resN2);
+  check('E5 新建沿用绑定会话 cwd', resN2.statusCode === 200 && JSON.parse(resN2.body).sessionId === 'session-new-1'
+    && calls[1] !== undefined && calls[1].cwd === 'D:/work/proj-a',
+    JSON.stringify(calls[1]) + ' sw=' + resSw.statusCode);
+}
 
 console.log('\n结果：' + pass + ' PASS / ' + fail + ' FAIL');
 process.exit(fail > 0 ? 1 : 0);

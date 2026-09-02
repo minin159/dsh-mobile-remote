@@ -61,6 +61,9 @@
   #refreshBtn { border: 1px solid var(--line); background: var(--panel); color: var(--ink);
     border-radius: 999px; font-size: 13px; padding: 6px 14px; flex-shrink: 0; }
   #refreshBtn:disabled { opacity: .5; }
+  #newBtn { border: 1px solid var(--accent); background: transparent; color: var(--accent);
+    border-radius: 999px; font-size: 13px; padding: 6px 14px; flex-shrink: 0; }
+  #newBtn:disabled { opacity: .5; }
   /* 首页视图分段切换（优3）：按工作区 / 按时间线 */
   #segRow { display: flex; gap: 8px; padding: 2px 14px 4px; }
   .segBtn { border: 1px solid var(--line); background: var(--panel); color: var(--muted);
@@ -303,6 +306,7 @@
       <div id="sumConn">正在连接…</div>
       <div id="sumCount">—</div>
     </div>
+    <button id="newBtn" style="display:none">＋ 新建</button>
     <button id="refreshBtn">刷新</button>
   </div>
   <div id="segRow">
@@ -1073,6 +1077,7 @@ function fetchSessions(force) {
       if (handleAuthCode(d && d.code)) return;
       if (d && d.ok) {
         state.pinned = (d.pinnedSession || null);
+        $('newBtn').style.display = d.canNew ? '' : 'none'; // 优3b：能力探测显隐
         ingestSessions(d.sessions || []);
         renderFollowRow();
         if (state.view === 'home') renderHome();
@@ -1354,6 +1359,27 @@ function openSession(sid) {
     })
     .catch(function () { toast('网络错误'); });
 }
+/** ＋新建（优3b，P10 证实路径）：服务端建会话 + 自动钉住，成功后切入会话视图。 */
+function createSession() {
+  var btn = $('newBtn');
+  if (btn.disabled) return; // 防连点
+  btn.disabled = true;
+  postJSON('/mobile-remote/new', { token: token })
+    .then(function (r) {
+      btn.disabled = false;
+      if (handleAuthCode(r && r.code)) return;
+      if (!(r && r.ok)) { toast('新建失败：' + ((r && r.message) || '未知错误')); return; }
+      state.pinned = r.sessionId; // 服务端已钉住，页面同步（跟随行不显示）
+      renderFollowRow();
+      setSession(r.sessionId, r.cwd);
+      updateHomeBound();
+      showView('chat');
+      toast('已新建会话，发消息即可开始');
+      fetchSessions(true); // 列表补上新会话（绕过节流）
+    })
+    .catch(function () { btn.disabled = false; toast('网络错误'); });
+}
+$('newBtn').addEventListener('click', createSession);
 
 // ── 连接管理 ─────────────────────────────────────────────────────────────
 function setConn(cls, text) {
