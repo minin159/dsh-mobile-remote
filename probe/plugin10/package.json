@@ -1,0 +1,13 @@
+{
+  "name": "mobile-remote-probe10",
+  "version": "0.0.0-probe.0",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "description": "// probe P10 探针插件：DSH 创建会话 API（sessionController.create）实测（不进发布）",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

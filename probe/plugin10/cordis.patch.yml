@@ -1,0 +1,10 @@
+# probe 10 探针插件的组合树挂载：web 组合里 session-controller 由 dsh-web-app 的
+# patch 插入；headless 载体没有它，这里由探针自己插入同一行（同一包名），
+# 使 ctx.get('sessionController') 在探针组合里可达。
+- insert:
+    - id: workspace
+      name: '@deepseek-ai/dsh-workspace'
+    - id: session-controller
+      name: '@deepseek-ai/dsh-api-session-controller'
+    - id: mobile-remote-probe10
+      name: 'mobile-remote-probe10'

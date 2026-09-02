@@ -274,3 +274,54 @@ web 组合挂载，即生产 web UI 模型选择器的后端）** 的 `selectMod
 4. **盾牌（无需探针项）**不受影响；P8 的 `model/selection` 事件与 P7 的 usage 均经既有 SSE 转发到达手机端，
    无需新增通道。
 5. 待 5b 在 web 实例完成的一行冒烟：`ctx.get('sessionController')` 可达性（headless 不挂载属预期）。
+
+---
+
+# 优化任务 A · 探针结论（P10）
+
+> 生成：2026-09-03。探针插件在 `probe/plugin10/`（mobile-remote-probe10），原始输出在
+> `probe/results/p10.log`（gitignore）。运行环境与命令见 `probe/README.md` 的 P10 节。
+> 宿主包版本：dsh 全家桶 0.1.2-alpha.1（同 P7–P9）。
+
+## P10 创建会话 API —— 证实
+
+**结论：** DSH 有官方创建会话 API：**`ctx.get('sessionController').create({cwd | workspaceId, sessionId?, agentPreset?})`**
+（dsh-api-session-controller，web 组合挂载，即生产 web UI「新建会话」按钮的后端）。
+由插件直调**实测成功**：返回 `{sessionId}`，新会话立即进入 live 注册表（`sessions.list()`、
+`agents.get(sid)`、`sessionQuery.listSessions()` 三路核对一致），发出 `session/created` 事件，
+并且**全新空闲会话（从未有过轮次）可被既有 steer 路径唤醒出首轮**——`createUserMessage(source plugin)`
++ `agent.steer(msg)` 实测 5 秒内产出 assistant/message + turn/end。**优3「新建会话」判定为可做**，
+完整复用现有绑定/steer 链路，零新增宿主依赖。
+
+**证据：**
+
+1. 源码（`dsh-api-session-controller/lib/index.js`）：
+   - `:2435` `_create_decorators = [Remote("create")]` —— SessionController 服务面暴露 create；
+     服务名 `sessionController`（`:2660` `super(ctx, "sessionController", { namespace: "session" })`），
+     web 组合由 `dsh-web-app/cordis.patch.yml` 以行 `- id: session-controller` 插入（与 P8 selectModel 同一服务）。
+   - `:576-601` `create(request)`：「Create or idempotently adopt one ordinary Session」——
+     接受 `{sessionId?, workspaceId? | cwd?, agentPreset?}`（二者互斥）→ `agents.ensureSession(sessionId, cwd, …)`
+     → workspace.attachSession（如给 workspaceId）→ 返回 `{sessionId, agentPreset?}`；错误词汇
+     bad-request / workspace-not-found / workspace-attach-failed / internal。
+   - `:993` 构造时挂 `ctx.on("session/created")` → `api-session/added`（桌面列表感知新建的机制）。
+   - headless 组合不挂该包（P8 已记）；探针组合由插件 patch 补插
+     `workspace` + `session-controller` 两行（与 web patch 同名同包）后激活成功——证明该服务
+     不依赖 web 传输面，插件侧 `ctx.get` 直调成立。
+2. 实测（`results/p10.log`，headless probe10 profile，真实 create + 真实 steer 一轮）：
+   - `sessionControllerMounted: true`，`hasCreate: true`，`hasCommandsCreate: true`；
+   - `sc.create({cwd: '…probe/workspace'})` → `{sessionId: "session-2b1cac5b-…"}`（**无需预生成 sessionId**）；
+   - `session/created` 事件实测发出（cwd 正确落到请求的目录）；
+   - live 核对：`sessions.list()` 含新会话 ✓；`agents.get(sid)` 可达且 `session.header.cwd` 一致 ✓；
+     `sessionQuery.listSessions()` 记录 `{live: true, persisted: false}` ✓；
+   - steer 唤醒：`agent.steer(createUserMessage(source:{kind:'plugin',plugin:'mobile-remote-probe10'}))`
+     → 5 秒内 `user/message`(seq 7/8) → `assistant/message`(seq 152) → `turn/end` → agent/status idle ✓。
+     决策 10 的「真人输入优先」不受影响：steer 的 plugin 来源不会把新会话误判为电脑当前会话
+     （humanAt 只认 `source.kind==='user'`），新建会话的绑定走显式 pinnedSid（决策 13）。
+3. 对优3 的落地路径：`+` → `sessionController.create({cwd: 当前绑定会话的 cwd})` →
+   `bindSession + pinnedSid = 新 sid`（复用 /switch 同款语义）→ 手机发首条消息走既有
+   `/send` → `agents.get(sid).steer`（本探针 D 项已实测该链路对全新会话成立）。
+   降级：运行时 `ctx.get('sessionController')` 缺失或 create 抛错 → 手机端返回错误提示、
+   `+` 按钮保留但报错（不静默失败）；服务在启动时探测缺失则整个隐藏 `+`。
+
+**降级预案：** 探针结论为证实，无需。若未来宿主移除该服务/改签名：启动探测 `typeof sc?.create === 'function'`
+不成立即隐藏 `+`，时间线与其余功能不受影响（P10 未定不阻塞交付的护栏在实现里同样成立）。

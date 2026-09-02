@@ -12,7 +12,8 @@
 | `p5-server.mjs` | P5 手机连通性（HTTP+SSE，0.0.0.0:18790，页面含 P6 双码） | `node probe/p5-server.mjs` |
 | `plugin/` | P2/P3/P4 探针插件（mobile-remote-probe） | 见下 |
 | `plugin5a/` | P7/P8/P9 探针插件（mobile-remote-probe5a，阶段 5a） | 见下 |
-| `results/` | 实测原始输出（p1-result.json、p3-*.log、p2.log、p5-*.log/jsonl、p7/p8*/p9*.log） | gitignore，不入库 |
+| `plugin10/` | P10 探针插件（mobile-remote-probe10，优化任务 A） | 见下 |
+| `results/` | 实测原始输出（p1-result.json、p3-*.log、p2.log、p5-*.log/jsonl、p7/p8*/p9*.log、p10.log） | gitignore，不入库 |
 
 ## 探针插件运行环境（P2/P3/P4）
 
@@ -52,6 +53,22 @@ MR_PROBE5A_MODE=p8 MR_PROBE5A_TARGET_MODEL=GLM-4.7-Flash [MR_PROBE5A_REWRITE=vet
 
 # P9 思考档位（TARGET_EFFORT 取 off/minimal/low/medium/high/xhigh/max/clear）
 MR_PROBE5A_MODE=p9 MR_PROBE5A_TARGET_EFFORT=low ... "请调用 probe_p9 工具一次，然后只回复 P9-DONE。"
+```
+
+## P10 探针插件运行环境（优化任务 A：创建会话 API）
+
+独立 DSH profile（不碰 web/desktop，验收后可整目录删除）：
+
+- `C:\Users\lq\.dsh\profiles\probe10\package.json` — bundles: `dsh-base` + `dsh-headless` + `mobile-remote-probe10`
+- `probe10\node_modules\mobile-remote-probe10` — junction 指回本仓库 `probe/plugin10/`
+- **关键差异**：headless 不挂 `dsh-api-session-controller`（web 组合才挂）。探针插件的
+  `cordis.patch.yml` 补插 `workspace` + `session-controller` 两行（与 dsh-web-app patch 同名同包），
+  使 `ctx.get('sessionController')` 在探针组合里可达——与生产 web 组合对这些服务的装配一致。
+
+```sh
+cd probe/workspace
+MR_PROBE10_LOG=<绝对路径>\p10.log \
+  node C:\Users\lq\.dsh\profiles\node_modules\@deepseek-ai\dsh\lib\bin.js --profile probe10 "请调用 probe_p10 工具一次，然后只回复 P10-DONE。"
 ```
 
 ## P5 手机动作清单（验收时逐项触发）
