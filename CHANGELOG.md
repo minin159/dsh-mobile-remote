@@ -1,5 +1,42 @@
 # Changelog
 
+## 1.5.0 (2026-09-03)
+
+优化任务 B 第一项 · 会话控制（优2 模型切换真控件）。**优4（多设备观察者模式）按用户指示暂缓**，
+已实现部分保留在 `opt4-wip` 分支，不随本版本发布。模型切换只走 P8 证实的官方路径；
+插件自实现 waterfall 改写在 P8 实测未落地，禁止尝试。
+
+### 新增
+
+- **模型切换真控件（优2）**：会话视图底栏新增 🧊 模型键——`/sessions` 新增 `canModel` 能力位
+  驱动显隐（与「＋新建」同款运行时探测：宿主缺 `sessionController.selectModel` 即隐藏，
+  POST 返回 501 `switch-unavailable`，不静默失败）。点击弹出底部弹层：
+  - 模型目录按供应商分组，数据源为官方 `llm.listProviders()` + `llm.listModels()`
+    （条目形状防御归一为 `{id, name}`，兼容字符串形态）；
+  - 当前生效模型高亮：读 `session.requestHeader().config`（P8 实测与消息 source 同源），
+    读不到（会话结束/代理缺失）时显示「跟随电脑端默认」；
+  - 点选即 `POST /mobile-remote/model` → 官方 `sessionController.selectModel({sessionId, provider, model})`，
+    自下一回合生效（不打断进行中的回合）；宿主校验拒绝（模型不存在等）如实透传 502 + 原始信息。
+  - 范围收紧（任务约定）：不做自定义模型名输入、不做批量/多会话生效、不做模型参数编辑。
+- **审计 `model_switch`**：每次切换（含失败尝试）写 `~/.dsh/mobile-remote-audit.jsonl`，
+  含 from/to（provider/model）与绑定会话 id，可回溯。
+
+### 质量基线
+
+- `probe/smoke-opt2.mjs`：19 项断言（目录形状归一/当前模型来源/官方调用契约/失败透传/
+  501 能力缺失/停用零影响/读不到模型时 current=null）。
+- `smoke-phase5` 5.1c 同步翻转（模型键由「探针降级隐藏」改为「真控件」断言）；
+  smoke-phase2（26）/phase4（42）/phase5（19）回归全绿。
+
+### 兼容与语义说明
+
+- 官方路径的已知副作用：`selectModel` 会把选择**同步保存为电脑端全局默认模型**
+  （P8 源码实证 `agentDefaultModel.saveSelection`，失败仅告警不影响切换），弹层内已明示；
+  不希望改默认时在电脑端切回即可。
+- 模型目录为适配器「建议目录」：宿主语义允许适配器接受未列出的模型 id；弹层仅列
+  官方接口返回的模型集（不做自定义输入，任务范围）。
+- 思考强度（🧠）键维持 P9 结论隐藏：本机 GLM-5.3-flash 未声明档位目录。
+
 ## 1.4.0 (2026-09-03)
 
 优化任务 A · 入口与会话组织（优1 + 优3）。前置探针 P10 证实 DSH 官方创建会话 API，

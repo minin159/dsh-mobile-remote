@@ -1,11 +1,11 @@
 {
   "name": "mobile-remote",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "license": "MIT",
   "private": true,
   "type": "module",
   "main": "index.js",
-  "description": "移动端远程控制：手机扫码/开链接看 DSH 会话流、发消息、审批、按工作区/时间线浏览、切换与新建会话，桌面 pair_qr 一键出码，底栏盾牌三档权限模式",
+  "description": "移动端远程控制：手机扫码/开链接看 DSH 会话流、发消息、审批、按工作区/时间线浏览、切换与新建会话，桌面 pair_qr 一键出码，底栏盾牌三档权限模式、模型切换（官方 selectModel）",
   "files": [
     "index.js",
     "client.js",
