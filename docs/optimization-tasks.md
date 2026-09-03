@@ -86,7 +86,52 @@
 
 ---
 
-## 大任务 C · 内容层 Apple 化（优6，目标 10–18 万，红线 15 万）
+## 大任务 C1 · 真机反馈修复轮（四条，基于 v1.6.0，目标 15–25 万，红线 25 万）
+
+> 来源：用户真机使用 v1.6.0（风格 E 换皮后）的反馈（2026-09-03 截图）。
+> C2 换皮已完成（opt6-done），本任务在其之上修复四条问题；完成后进入大验收。
+
+```text
+任务：为 DSH 插件 mobile-remote 修复四条真机反馈。工作目录 D:\dsh-plugins\mobile-remote。环境：Windows + Git Bash，node v24 在 PATH。
+开工必读：docs/roadmap.md（决策 12/13：环形缓冲与游标补发、钉住语义）+ docs/probe-findings.md（P4：sessionQuery.readSession 存在性）。
+
+四条修复（按此顺序，各独立 commit）：
+1. fix(new-session): 新建会话默认工作区改 D 盘
+   /new 的 create({cwd}) 从「沿用当前绑定会话 cwd」（index.js:1553 注释处）改为默认
+   'D:\'（常量 DEFAULTS.newSessionCwd）。收紧：本轮不做设置页配置项。
+2. feat(thinking): 思考过程可折叠块
+   现状：reasoning-delta 只显示「🤔 思考中…」一行提示，思考文本未渲染（page.html:617/702）。
+   改为：流式期间提示行升级为可折叠块——展开可见实时思考文本（累积追加，展开态才自动滚底）；
+   assistant/message 定稿后思考块保留为收起态（显示行数/字数摘要，点击展开）。
+   定稿消息若带 reasoning 字段以其为准，否则保留流式累积内容。折叠态记忆存 localStorage。
+   样式直接按当前 E 令牌做（页面已换皮 v1.6.0，无需占位）。
+3. feat(history): 进入会话回读最近历史
+   现状：进会话只回放环形缓冲（仅插件启用期间、200 帧上限），持久化历史从未接入。
+   接入 sessionQuery.readSession：进入/切换会话时，若该会话环形缓冲为空或不足 30 条，
+   从 readSession 拉最近 30 条消息渲染为历史区（顶部加「 历史 」分隔条标识），
+   之后无缝衔接 live 流与游标补发（决策 12 语义不变）。readSession 返回载荷形状未知——
+   先打印核实结构再写渲染（P4 只探了存在性）。读失败静默降级为现状（仅缓冲回放），不阻塞。
+4. fix(scroll): APK 内消息显示不全、无法滑动（阻塞级，优先定位）
+   #stream 的 overflow-y:auto + -webkit-overflow-scrolling 在手机浏览器正常，
+   在 Android WebView 失效。定位手段：USB 连接 + chrome://inspect 远程调试
+   （app 仓库 D:\dsh-plugins\mobile-remote-app 的 MainActivity WebView）。
+   页面侧候选修复：html/body 由 height:100% 改 100dvh 或 position:fixed 布局、
+   逐级核查 flex 高度链（html/body → #app → 会话视图 → #stream）。
+   若根因在壳侧（WebView 设置/Activity 布局）：只产出最小 patch 说明（精确到文件与行），
+   不直接改 app 仓库（跨仓库约束），交回主会话执行。
+
+护栏：红线 25 万 token；四条各独立 commit；同一问题重试 ≤2 次；第 4 条若两轮定位
+仍无法确定根因，保留诊断数据停下汇报，禁止盲改；交付前旧冒烟三套 + smoke-opt2 全过。
+
+验收（真机）：新建会话落在 D:\；思考块可展开/收起且定稿后保留；进会话可见历史并
+无缝衔接新消息；APK 内长对话可滑动到底；浏览器端无回归。
+交付：版本 1.5.1；roadmap 记录；tag c1-fixes-done。
+预算提示：目标 15–25 万 token。
+```
+
+---
+
+## 大任务 C2 · 内容层 Apple 化（原大任务 C，优6，目标 10–18 万，红线 15 万）
 
 ```text
 任务：把 mobile-remote 移动端页面（web/page.html）按 Apple 风格重新皮肤化，与 App 壳（v3 灰）完全一体。工作目录 D:\dsh-plugins\mobile-remote。环境：Windows + Git Bash，node v24 在 PATH。
@@ -122,7 +167,6 @@ class 命名）；不做动效库/复杂动画；不碰 index.js/client.js 的�
 预算提示：目标 10–18 万 token。
 ```
 
-**执行顺序（用户已确认「先 C 后验」）**：A ✅ → B（优2 ✅/优4 暂缓）→ C ✅（2026-09-03，
-tag `opt6-done`，v1.6.0，106 冒烟全绿，真机项并入大验收）→
-**强制衔接：C 完成后下一个任务必须是「大验收 + 整改」（含 17 项累计欠账 + C 新增的真机项），
-不得再顺延**——fix 将直接基于 E 新样式出。C 与 A/B 同仓库同文件，与其它插件任务依然串行。
+**执行顺序（2026-09-03 真机反馈后更新）**：A ✅ → B（优2 ✅/优4 暂缓）→ C ✅（tag
+`opt6-done`，v1.6.0，106 冒烟全绿）→ **C1 修复轮（四条真机反馈，基于 v1.6.0）→
+大验收 + 整改（强制，不再顺延，含累计欠账 + C1 新增真机项）**。C1 与大验收同仓库同文件，串行。
