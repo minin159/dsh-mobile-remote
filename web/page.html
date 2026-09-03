@@ -30,13 +30,27 @@
     }
   }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  /* 高度基准（C1 fix(scroll)）：dvh 优先——Android WebView 沉浸式全屏下
+     html/body 的 height:100% 以整块物理屏为包含块（浏览器 App 会自行扣除
+     系统栏，WebView 不会），#stream 的 flex:1 拿到超视口高度 → 底部被导航栏
+     遮住、overflow-y 不触发；dvh 跟随动态视口。老内核无 dvh 时回退 100%。 */
   html, body { height: 100%; }
+  @supports (height: 100dvh) {
+    html, body { height: 100dvh; }
+  }
   button, input, textarea { font-family: inherit; }
   body {
     margin: 0; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif;
     background: var(--bg); color: var(--ink); font-size: 15px;
     display: flex; flex-direction: column;
     -webkit-font-smoothing: antialiased;
+    overflow: hidden; /* 滚动只发生在 #stream/#homeView（唯一滚动容器），
+                          双滚动链是 WebView 下「能滚但显示不全」的另一半根源 */
+  }
+  /* dvh 不可用时的兜底布局（脚本探测后加 class）：body 四边钉住视口，
+     掐断 WebView 高度测量抖动；现代浏览器不受影响（class 永不加）。 */
+  body.fixedBody {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
   }
   /* ── 视图切换（阶段 4）：首页 ↔ 会话双视图，body class 控制 ─────────── */
   #topbar, #homeTop {
@@ -436,6 +450,22 @@
 
 <script>
 'use strict';
+// ── WebView 滚动加固（C1 fix(scroll)）────────────────────────────────────
+// Android WebView（壳）与浏览器的高度测量差异：CSS 侧已把 html/body 基准
+// 换成 100dvh（老内核回退 100%）。这里再探一次 dvh 实际是否生效——
+// 无 dvh 支持（老 WebView 内核）时 body 直接切 position:fixed 布局
+// （四边钉住视口），从包含块层面掐断「body 高于视口」的整条失效链。
+(function () {
+  try {
+    var probe = document.createElement('div');
+    probe.style.cssText = 'position:fixed;top:0;height:100dvh;visibility:hidden;';
+    document.body.appendChild(probe);
+    var ok = probe.getBoundingClientRect().height > 0
+      && Math.abs(probe.getBoundingClientRect().height - window.innerHeight) < 2;
+    probe.remove();
+    if (!ok) document.body.classList.add('fixedBody');
+  } catch (e) {}
+})();
 // ── 基础状态 ─────────────────────────────────────────────────────────────
 // token 即配对码：来自页面路径段（/mobile-remote/p/<token>），所有接口调用都带上。
 var token = (location.pathname.split('/p/')[1] || '').replace(/\/+$/, '');
