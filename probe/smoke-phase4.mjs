@@ -414,21 +414,26 @@ check('E2 事件后 lastAt 更新（仅活跃会话）', a && a.lastAt > 0 && b2
   const jn = JSON.parse(resN.body);
   check('E4 /new 创建并返回会话', resN.statusCode === 200 && jn.ok === true && jn.sessionId === 'session-new-1' && jn.live === true,
     resN.statusCode + ' ' + resN.body);
-  check('E4b 无绑定 cwd 时以空请求创建', calls.length === 1 && calls[0] !== undefined && calls[0].cwd === undefined,
+  check('E4b 无绑定 cwd 时默认 D:\\', calls.length === 1 && calls[0] !== undefined && calls[0].cwd === 'D:\\',
     JSON.stringify(calls));
   const resS = mockRes();
   await E.routes.get('/mobile-remote/sessions')(mockReq('/mobile-remote/sessions?token=testtoken123'), resS);
   const js = JSON.parse(resS.body);
   check('E4c canNew=true 且 pinned=新会话', js.canNew === true && js.pinnedSession === 'session-new-1',
     JSON.stringify({ canNew: js.canNew, pinned: js.pinnedSession }));
-  // E5 优3b：先切到带 cwd 的会话，新建应沿用其目录（P10：create({cwd})）
+  // E5 优3b（C1 修正）：新建默认落 D 盘（NEW_SESSION_CWD），不再沿用当前绑定会话目录；
+  //    请求体显式带 cwd 时以请求为准（预留官方参数面）
   const resSw = mockRes();
   await E.routes.get('/mobile-remote/switch')(mockReq('/mobile-remote/switch', 'POST', { token: 'testtoken123', sessionId: 'session-e4a' }), resSw);
   const resN2 = mockRes();
   await E.routes.get('/mobile-remote/new')(mockReq('/mobile-remote/new', 'POST', { token: 'testtoken123' }), resN2);
-  check('E5 新建沿用绑定会话 cwd', resN2.statusCode === 200 && JSON.parse(resN2.body).sessionId === 'session-new-1'
-    && calls[1] !== undefined && calls[1].cwd === 'D:/work/proj-a',
+  check('E5 新建默认落 D:\\（不沿用绑定会话 cwd）', resN2.statusCode === 200 && JSON.parse(resN2.body).sessionId === 'session-new-1'
+    && calls[1] !== undefined && calls[1].cwd === 'D:\\',
     JSON.stringify(calls[1]) + ' sw=' + resSw.statusCode);
+  const resN3 = mockRes();
+  await E.routes.get('/mobile-remote/new')(mockReq('/mobile-remote/new', 'POST', { token: 'testtoken123', cwd: 'D:/work/explicit' }), resN3);
+  check('E5b 请求体显式 cwd 以请求为准', resN3.statusCode === 200 && calls[2] !== undefined && calls[2].cwd === 'D:/work/explicit',
+    JSON.stringify(calls[2]));
 }
 
 console.log('\n结果：' + pass + ' PASS / ' + fail + ' FAIL');

@@ -84,6 +84,10 @@ const DEFAULTS = {
   auditEnabled: true,   // 审计 JSONL（~/.dsh/mobile-remote-audit.jsonl）：只记元数据不记正文
 };
 
+/** 优3b 修正：/new 新建会话的默认工作区（C1 真机反馈：原先沿用当前绑定会话目录，
+ *  用户期望统一落 D 盘；本轮不做设置页配置项，按常量收口）。 */
+const NEW_SESSION_CWD = 'D:\\';
+
 /** 环形缓冲上限：每会话缓存最近 200 条转发帧，供断线/整页重载/切换会话后补发。 */
 const RING_CAP = 200;
 /** 环形缓冲最多追踪的会话数（阶段 2 起所有根会话都入缓冲，上限放宽到 16）。 */
@@ -1550,7 +1554,8 @@ export function apply(ctx, config) {
       });
 
       // 6b) 新建会话（优3b）：sessionController.create（P10 证实）→ 自动切入并钉住。
-      //     cwd 沿用当前绑定会话的目录（手机端无目录选择语义，见任务范围：不做工作区选择）。
+      //     cwd 默认 D 盘（NEW_SESSION_CWD，C1 反馈：不再沿用当前绑定会话目录；
+      //     请求体显式带 cwd 时以请求为准——预留官方参数面，不做设置页配置）。
       reg({
         kind: 'exact',
         path: ROUTE_NEW,
@@ -1586,10 +1591,10 @@ export function apply(ctx, config) {
             return;
           }
           const fromSid = boundSid; // 审计用
-          const cwd = boundCwd || (boundSid ? activity.get(boundSid)?.cwd || '' : '');
+          const cwd = typeof parsed.cwd === 'string' && parsed.cwd.trim() ? parsed.cwd.trim() : NEW_SESSION_CWD;
           let created;
           try {
-            created = await sc.create(cwd ? { cwd } : {});
+            created = await sc.create({ cwd });
           } catch (error) {
             console.error(PLUGIN_TAG, '新建会话失败:', msgOf(error));
             sendJson(res, 502, { ok: false, code: 'create-failed', message: '创建会话失败：' + msgOf(error) });
