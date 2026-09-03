@@ -195,6 +195,28 @@
   #stream::-webkit-scrollbar { width: 4px; }
   #stream::-webkit-scrollbar-thumb { background: var(--line2); border-radius: 2px; }
   .thinking { font-size: 12px; color: var(--muted); font-style: italic; margin: 4px 6px; }
+  /* 思考过程可折叠块（C1 feat(thinking)）：流式期间实时累积，定稿后收起态留摘要行。
+     沿用 E 令牌（panel2 卡片底 + line2 描边 + muted 次级文字），不引入新色。 */
+  .thinkBlock {
+    margin: 6px 0; border: 1px solid var(--line2); border-radius: 12px;
+    background: var(--panel2); overflow: hidden;
+  }
+  .thinkHead {
+    display: flex; align-items: baseline; gap: 6px;
+    padding: 8px 12px; cursor: pointer;
+    font-size: 12px; color: var(--muted); font-style: italic;
+  }
+  .thinkHead .thinkCaret { flex-shrink: 0; font-style: normal; }
+  .thinkHead .thinkSum {
+    flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .thinkBlock.open .thinkHead .thinkSum { white-space: pre-wrap; overflow: visible; }
+  .thinkBody {
+    display: none; padding: 0 12px 9px;
+    font-size: 12.5px; line-height: 1.6; color: var(--muted); font-style: normal;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  .thinkBlock.open .thinkBody { display: block; }
   /* 回到底部 ↓ FAB（阶段 4：离开底部/新消息时出现，圆形） */
   #newMsg {
     position: fixed; right: 14px; bottom: calc(96px + env(safe-area-inset-bottom));
@@ -548,6 +570,10 @@ function trimStream() {
     if (!node) break;
     var cid = node.getAttribute('data-call');
     if (cid) delete toolLines[cid]; // 同步清理工具行索引，防悬挂引用
+    // 思考块同理：被折叠移除的块从索引清掉（thinkBlockOf 的 parentNode 检查兜底重建）
+    for (var k in thinkBlocks) {
+      if (thinkBlocks[k].el === node) delete thinkBlocks[k];
+    }
     node.remove();
   }
   if (!streamEl.firstElementChild || streamEl.firstElementChild.id !== 'trimMark') {
@@ -571,6 +597,15 @@ function contentText(content) {
     }
   }
   return out;
+}
+/** 思考文本提取（C1）：assistant/message 定稿 content 里的 reasoning 块。 */
+function reasoningTextOf(content) {
+  if (!Array.isArray(content)) return '';
+  for (var i = 0; i < content.length; i++) {
+    var b = content[i] || {};
+    if ((b.kind || b.type) === 'reasoning' && typeof b.text === 'string') return b.text;
+  }
+  return '';
 }
 /** 生成一条助手流式气泡（按 turn:step 归并 text-delta）。 */
 var streamingBubbles = {};
@@ -614,13 +649,16 @@ function handleSession(ev) {
         b.text += chunk.text;
         b.bubble.textContent = b.text;
         afterAppend();
-      } else if (chunk.type === 'reasoning-delta') {
-        showThinking();
+      } else if (chunk.type === 'reasoning-delta' && typeof chunk.text === 'string') {
+        if (chunk.text) appendThinking(data.turn, data.step, chunk.text);
+        else showThinking();
       }
       break;
     }
     case 'assistant/message': {
       var finalText = contentText(data.message && data.message.content);
+      // 思考块定稿：定稿消息带 reasoning 块以其为准，否则保留流式累积内容
+      settleThinking(data.turn, data.step, reasoningTextOf(data.message && data.message.content));
       finishStreaming(data.turn, data.step, finalText);
       // ◐ 上下文只读展示（P7 探针：usage 挂在 assistant/message，含缓存命中字段）
       if (data.usage && typeof data.usage.inputTokens === 'number') updateCtx(data.usage);
@@ -699,15 +737,100 @@ function markToolResult(callId, ok) {
     n.textContent = n.textContent.replace('🔧', ok ? '✅' : '❌');
   }
 }
+// ── 思考过程可折叠块（C1 feat(thinking)）────────────────────────────────
+// 流式 reasoning-delta 累积进当前 step 的可折叠块；assistant/message 定稿后
+// 转为收起态（带行数/字数摘要）。reasoning 块与 chunk 均出自同一适配器
+// （宿主 BlockAssembler/ pi-ai thinking_* 全链，载荷形状已核实）。
+// 模型不输出思考时不出现任何块（showThinking 仍兜底老语义：只提示不渲染）。
+var thinkFoldOpen = null; // 用户对思考块的展开偏好：null=默认收起（localStorage 持久化）
+try {
+  var _tf = localStorage.getItem('mr-think-fold');
+  thinkFoldOpen = _tf === 'open' ? true : (_tf === 'fold' ? false : null);
+} catch (e) {}
+function saveThinkFold(open) {
+  thinkFoldOpen = open;
+  try { localStorage.setItem('mr-think-fold', open === true ? 'open' : 'fold'); } catch (e) {}
+}
+function thinkSummaryOf(text) {
+  var lines = text ? text.split('\n').length : 0;
+  var chars = text ? text.length : 0;
+  return lines + ' 行 · ' + chars + ' 字';
+}
+/** 组装/取得流式思考块 DOM（同一 step 复用；流式期间内容实时追加）。 */
+var thinkBlocks = {}; // 'turn:step' → 块对象
+function thinkBlockOf(turn, step) {
+  var key = (turn === undefined ? '?' : turn) + ':' + (step === undefined ? '?' : step);
+  var t = thinkBlocks[key];
+  if (!t || !t.el.parentNode) {
+    var el = document.createElement('div');
+    el.className = 'thinkBlock';
+    var head = document.createElement('div');
+    head.className = 'thinkHead';
+    var caret = document.createElement('span');
+    caret.className = 'thinkCaret';
+    caret.textContent = '▸';
+    var sum = document.createElement('span');
+    sum.className = 'thinkSum';
+    head.appendChild(caret);
+    head.appendChild(sum);
+    var body = document.createElement('div');
+    body.className = 'thinkBody';
+    el.appendChild(head);
+    el.appendChild(body);
+    // 折叠态记忆：用户展开过（thinkFoldOpen===true）则新块默认展开；
+    // 收起偏好（false）与无记忆（null=默认收起）都从收起开始。
+    var open = thinkFoldOpen === true;
+    setThinkOpen(el, open);
+    head.addEventListener('click', function () {
+      var nowOpen = !el.classList.contains('open');
+      setThinkOpen(el, nowOpen);
+      saveThinkFold(nowOpen);
+      if (nowOpen) afterAppend(true); // 展开动作本身触发滚底（用户明确在看）
+    });
+    streamEl.appendChild(el);
+    t = thinkBlocks[key] = { el: el, head: head, caret: caret, sum: sum, body: body, text: '', live: true };
+    afterAppend();
+  }
+  return t;
+}
+function setThinkOpen(el, open) {
+  el.classList.toggle('open', open);
+  var caret = el.querySelector('.thinkCaret');
+  if (caret && caret.textContent !== undefined) caret.textContent = open ? '▾' : '▸';
+}
+/** 流式思考增量：追加文本；展开态才自动滚底（收起态不打扰阅读位置）。 */
+function appendThinking(turn, step, text) {
+  var t = thinkBlockOf(turn, step);
+  t.text += text;
+  t.body.textContent = t.text;
+  t.sum.textContent = '🤔 思考中… ' + thinkSummaryOf(t.text);
+  if (t.el.classList.contains('open')) afterAppend();
+}
+/** 定稿：reasoning 字段（若定稿消息携带）覆盖流式累积；转收起态 + 摘要行。 */
+function settleThinking(turn, step, reasoning) {
+  var key = (turn === undefined ? '?' : turn) + ':' + (step === undefined ? '?' : step);
+  var t = thinkBlocks[key];
+  if (t) {
+    if (typeof reasoning === 'string' && reasoning) t.text = reasoning;
+    t.live = false;
+    if (!t.text) { t.el.remove(); delete thinkBlocks[key]; return; }
+    t.body.textContent = t.text;
+    t.sum.textContent = '🤔 已思考 · ' + thinkSummaryOf(t.text);
+    setThinkOpen(t.el, false); // 定稿默认收起（点击可再展开）
+  } else if (typeof reasoning === 'string' && reasoning) {
+    // 无流式过程（补发历史帧/模型一次性给出）：直接落一条定稿态思考块
+    var blk = thinkBlockOf(turn, step);
+    blk.text = reasoning;
+    blk.live = false;
+    blk.body.textContent = reasoning;
+    blk.sum.textContent = '🤔 已思考 · ' + thinkSummaryOf(reasoning);
+    setThinkOpen(blk.el, false);
+    afterAppend();
+  }
+}
 function showThinking() {
-  var el = document.getElementById('thinkingHint');
-  if (el) return;
-  el = document.createElement('div');
-  el.id = 'thinkingHint';
-  el.className = 'thinking';
-  el.textContent = '🤔 思考中…';
-  streamEl.appendChild(el);
-  afterAppend();
+  // 兜底：块未建（如极早期帧）时建块并给提示文案（老语义的升级形态）
+  thinkBlockOf(undefined, undefined);
 }
 
 // ── 流式"当前动作"pill（阶段 4）：仿 ZCode 运行中的动作摘要 ─────────────
@@ -875,7 +998,7 @@ function finishStreaming(turn, step, finalText) {
   var key = (turn === undefined ? '?' : turn) + ':' + (step === undefined ? '?' : step);
   var b = streamingBubbles[key];
   var think = document.getElementById('thinkingHint');
-  if (think) think.remove();
+  if (think) think.remove(); // 旧版提示行（已被 thinkBlock 取代，防御性保留清理）
   if (b) {
     if (finalText) renderContent(b.bubble, finalText); // 以最终消息为准 + 富渲染
     delete streamingBubbles[key];
@@ -1186,6 +1309,7 @@ function clearStream() {
   streamEl.innerHTML = '';
   streamingBubbles = {};
   toolLines = {};
+  thinkBlocks = {}; // 思考块随消息流一起清（切会话/重绑）
   state.nearBottom = true;
   $('newMsg').classList.remove('show');
   $('actionPill').classList.remove('show');

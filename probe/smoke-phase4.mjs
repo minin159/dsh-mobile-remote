@@ -29,9 +29,15 @@ function makeEl(tag) {
     style: {},
     attrs: {},
     scrollTop: 0, scrollHeight: 0, clientHeight: 0,
-    appendChild(c) { this.children.push(c); return c; },
-    insertBefore(c) { this.children.unshift(c); return c; },
-    remove() {},
+    appendChild(c) { c.parentNode = this; this.children.push(c); return c; },
+    insertBefore(c) { c.parentNode = this; this.children.unshift(c); return c; },
+    remove() {
+      if (this.parentNode) {
+        const i = this.parentNode.children.indexOf(this);
+        if (i >= 0) this.parentNode.children.splice(i, 1);
+        this.parentNode = null;
+      }
+    },
     addEventListener(t, f) { (this.listeners[t] = this.listeners[t] || []).push(f); },
     setAttribute(k, v) { this.attrs[k] = v; },
     getAttribute(k) { return this.attrs[k]; },
@@ -306,6 +312,60 @@ check('D1b 双视图关键元素齐备（页面可访问）',
   sandbox.renderHome();
   check('D16c 切回工作区视图恢复原汇总行', byId.sumCount.textContent === '2 个工作区 · 2 个任务'
     && byId.segWs.classList.contains('on') && !byId.segTime.classList.contains('on'));
+}
+// D17 思考过程可折叠块（C1 feat(thinking)）：流式累积 → 定稿收起 + 摘要 → 展开记忆
+{
+  const stream = byId.stream;
+  const n0 = stream.children.length;
+  // 流式：两个 reasoning-delta 增量追加到同一块
+  sandbox.appendThinking(3, 1, '先分析');
+  sandbox.appendThinking(3, 1, '问题\n再列步骤');
+  const tb = sandbox.thinkBlocks['3:1'];
+  check('D17 流式思考块创建并累积', !!tb && tb.el.className === 'thinkBlock'
+    && tb.body.textContent === '先分析问题\n再列步骤'
+    && stream.children[stream.children.length - 1] === tb.el
+    && stream.children.length === n0 + 1,
+    'text=' + JSON.stringify(tb && tb.body.textContent));
+  check('D17b 流式摘要行（思考中 + 行数/字数）', tb.sum.textContent === '🤔 思考中… 2 行 · 10 字',
+    'sum=' + tb.sum.textContent);
+  check('D17c 流式期间默认收起（无展开记忆）', !tb.el._classes.has('open'));
+  check('D17d 定稿无 reasoning → 保留流式累积',
+    (() => { sandbox.settleThinking(3, 1, ''); return tb.sum.textContent === '🤔 已思考 · 2 行 · 10 字'
+      && tb.body.textContent === '先分析问题\n再列步骤' && !tb.el._classes.has('open'); })(),
+    'sum=' + tb.sum.textContent);
+  // 定稿带 reasoning 字段以其为准（换行符计入字数：定稿思考\n两行 = 7 字）
+  sandbox.appendThinking(3, 2, '流式内容');
+  sandbox.settleThinking(3, 2, '定稿思考\n两行');
+  const tb2 = sandbox.thinkBlocks['3:2'];
+  check('D17e 定稿 reasoning 覆盖流式累积', tb2 && tb2.body.textContent === '定稿思考\n两行'
+    && tb2.sum.textContent === '🤔 已思考 · 2 行 · 7 字' && !tb2.el._classes.has('open'),
+    'text=' + JSON.stringify(tb2 && tb2.body.textContent) + ' sum=' + (tb2 && tb2.sum.textContent));
+  // 无流式内容的思考（空 delta）+ 空定稿 → 块不保留
+  sandbox.showThinking(); // 建块（空文本）
+  sandbox.settleThinking(undefined, undefined, '');
+  check('D17f 空定稿且无流式内容 → 块移除', !sandbox.thinkBlocks['?:?']);
+  // 无流式直接定稿（历史补发帧）：直接落定稿态
+  sandbox.settleThinking(5, 1, '历史思考内容');
+  const tb3 = sandbox.thinkBlocks['5:1'];
+  check('D17g 无流式定稿直接落块', tb3 && tb3.sum.textContent === '🤔 已思考 · 1 行 · 6 字',
+    'sum=' + (tb3 && tb3.sum.textContent));
+  // 展开记忆：localStorage 写入 + 新块跟随
+  const head2 = sandbox.thinkBlocks['5:1'].head;
+  (head2.listeners.click || []).forEach((fn) => fn());
+  check('D17h 点击展开写 localStorage', sandbox.localStorage.getItem('mr-think-fold') === 'open'
+    && sandbox.thinkBlocks['5:1'].el._classes.has('open'));
+  // 流式新块跟随展开偏好；但定稿块被 settleThinking 强制收起，不跟随记忆
+  sandbox.appendThinking(6, 1, '下一块');
+  check('D17i 流式新块跟随展开偏好', sandbox.thinkBlocks['6:1'].el._classes.has('open'));
+  // reasoningTextOf：定稿 content 数组提取 reasoning 块
+  check('D17j reasoningTextOf 提取', sandbox.reasoningTextOf([
+    { type: 'text', text: '回答' }, { type: 'reasoning', text: '思考R' }]) === '思考R'
+    && sandbox.reasoningTextOf([{ type: 'text', text: 'x' }]) === ''
+    && sandbox.reasoningTextOf(undefined) === '');
+  // clearStream 清思考块索引
+  sandbox.clearStream();
+  check('D17k clearStream 清思考块索引', Object.keys(sandbox.thinkBlocks).length === 0
+    && Object.keys(sandbox.streamingBubbles).length === 0);
 }
 
 // ── E 组：后端 /sessions 补 lastAt ─────────────────────────────────────────
