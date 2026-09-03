@@ -1,5 +1,64 @@
 # Changelog
 
+## 1.7.0 (2026-09-03)
+
+C1 · 真机反馈修复轮（四条，基于 v1.6.0）。每条独立 commit，全部落地：
+`f2e020d`（新建会话默认 D 盘）→ `f31f432`（思考可折叠块）→ `55c28c1`
+（进会话回读历史）→ `01c0089`（APK 滚动失效）。**优4（多设备观察者
+模式）按用户指示本轮不执行**，WIP 继续留存 `opt4-wip` 分支。
+
+### 修复
+
+- **新建会话默认工作区改 D 盘**：`/new` 不再沿用当前绑定会话目录，默认
+  `NEW_SESSION_CWD = 'D:\'`（常量收口，本轮不做设置页配置项）；请求体显式
+  `cwd` 仍以请求为准（预留官方参数面）。
+- **APK 内消息显示不全、无法滑动（阻塞级）**：根因为壳沉浸式全屏
+  （`SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN`）下 WebView 视口 = 整块物理屏，
+  `html/body` 的 `height:100%` 基准超可视区 → `#stream` flex:1 分到超视口
+  高度 → 溢出不发生 → `overflow-y:auto` 不触发，尾部被系统栏遮挡（浏览器
+  App 自行扣系统栏故正常）。页面侧三层加固：`@supports 100dvh` 升级高度
+  基准（老内核回退 100%）+ `body overflow:hidden` 掐断双滚动链 + dvh 实效
+  探测失败时 `position:fixed` 兜底。壳侧 patch（adjustResize 等）见
+  `docs/fix4-scroll-diagnosis.md`，按跨仓库约束交回主会话执行。
+
+### 新增
+
+- **思考过程可折叠块**：`reasoning-delta` 从一行「🤔 思考中…」提示升级为
+  可折叠块——流式期间实时累积文本（展开态才自动滚底，收起态不打扰阅读
+  位置），摘要行实时显示行数/字数；`assistant/message` 定稿后保留为收起态
+  （定稿带 reasoning 字段以定稿为准，否则保留流式累积），点击随时展开。
+  折叠偏好 localStorage 持久化（展开过则后续流式块默认展开）。载荷形状经
+  宿主源码核实：reasoning 块与 reasoning-delta chunk 同出 BlockAssembler
+  （pi-ai thinking_* 全链映射），模型不输出思考时不出现任何块。
+- **进入会话回读最近历史**：接入 `sessionQuery.readSession`（P4 只探过
+  存在性，本轮先核实载荷：`{session, events[]}`，live 优先、含全量事件，
+  持久化经 chunk-row 解码还原）。SSE 建连与 `/switch` 时环形缓冲不足
+  30 帧则拉最近 30 条定稿消息（过滤 chunk 噪声），独立 `history` SSE 帧
+  推送；页面渲染为顶部「—— 历史 ——」分隔条 + 定稿消息（含思考块），
+  与 live 流无缝衔接，决策 12 的游标补发语义不变；重复/迟到帧去重。
+  读失败/宿主缺失静默降级为现状（仅缓冲回放），不阻塞连接。
+
+### 质量基线
+
+- 冒烟四套全绿：phase2 26 + phase4 69 + phase5 19 + opt2 19 = **133 断言 0 FAIL**。
+  新增覆盖：/new 默认 cwd 断言改新语义（E4b/E5 + E5b 显式 cwd）；思考块 D17
+  组 11 项（累积/摘要/定稿覆盖/空块移除/展开记忆/清理）；历史 E6 组 7 项
+  （触发条件/chunk 过滤封顶/尾部对齐/读失败降级/无服务降级）+ D18 组 8 项
+  （分隔条/顺序/思考块/去重/迟到/清理）。mini DOM stub 升级：`parentNode`
+  维护、`insertBefore` 参考节点、`id` 赋值注册（getElementById 真实语义）。
+- 载荷形状核实记录（宿主源码实查，防再次盲探）：reasoning-delta chunk
+  `{type:'reasoning-delta', index, text}`；定稿 content 数组含
+  `{type:'reasoning', text}`；readSession 见上。
+
+### 待办（真机验收清单，待手机配合回填）
+
+1. 新建会话落在 `D:\`（电脑端核对新会话 cwd）。
+2. 思考块可展开/收起，定稿后保留且摘要正确。
+3. 进入会话可见历史分隔条 + 历史 30 条，与 live 新消息无缝衔接。
+4. APK 内长对话可滑动到底、输入框不被系统栏遮挡；**壳侧 patch 未执行前
+   页面侧三层加固应已生效（壳只加载 URL，无需重装 APK 即可复验）**。
+5. 浏览器端无回归（滚动/思考块/历史区）。
+
 ## 1.6.0 (2026-09-03)
 
 优化任务 C · 内容层 Apple 化（优6）。移动端页面按「风格 E · iOS 黑灰」整体换肤，与 App 壳
