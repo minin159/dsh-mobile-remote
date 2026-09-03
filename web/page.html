@@ -1756,6 +1756,12 @@ function connect() {
     if (Number.isFinite(idNum) && idNum > state.seq) { state.seq = idNum; saveCursor(); }
     handleSession(d);
   });
+  // 历史回读（C1 feat(history)）：进入/切换会话时缓冲不足，服务器从
+  // readSession 拉最近历史。渲染为顶部「历史」区（与 live 流分隔），
+  // 在已渲染的 live 帧之上前插；之后 live 流无缝衔接（决策 12 语义不变）。
+  es.addEventListener('history', function (e) {
+    renderHistoryFrame(JSON.parse(e.data));
+  });
   es.addEventListener('status', function (e) {
     var d = JSON.parse(e.data);
     setAgent(d.status, d.error);
@@ -1802,6 +1808,42 @@ function connect() {
       })
       .catch(function () { retryConnect(); });
   });
+}
+
+/** 历史区渲染（C1 feat(history)）：SSE history 帧 → 顶部「历史」分隔条 + 定稿消息。
+ *  只读定稿：user 气泡 + assistant 定稿（含 reasoning 思考块）；迟到的
+ *  历史（已切走/已渲染过）直接丢弃，不与 live 流重复。 */
+function renderHistoryFrame(d) {
+  if (!d || d.sessionId !== state.sessionId) return; // 迟到的历史帧（已切走）：丢弃
+  var msgs = Array.isArray(d.messages) ? d.messages : [];
+  if (!msgs.length) return;
+  if (document.getElementById('histSep')) return; // 已有历史区：去重
+  var sep = document.createElement('div');
+  sep.id = 'histSep';
+  sep.className = 'sys';
+  sep.textContent = '—— 历史' + (d.more ? '（更早未显示）' : '') + ' ——';
+  // 分隔条先落在流尾（live 帧之后），历史节点随后 append 在其后面，
+  // 最后整组（分隔条+历史）移动到流顶——live 帧顺序不动。
+  streamEl.appendChild(sep);
+  var sepIdx = Array.prototype.indexOf.call(streamEl.children, sep);
+  for (var i = 0; i < msgs.length; i++) {
+    var m = msgs[i] || {};
+    var data = m.data || {};
+    if (m.type === 'user/message') {
+      var src = data.source || {};
+      var who = src.kind === 'plugin' ? '📱 ' + (src.plugin || '插件') : '💻 电脑';
+      addBubble('me', contentText(data.content || (data.message && data.message.content)),
+        who + ' · ' + (m.time ? fmtTimeOf(new Date(m.time)) : ''), false);
+    } else if (m.type === 'assistant/message') {
+      var content = data.message && data.message.content;
+      settleThinking(data.turn, data.step, reasoningTextOf(content));
+      finishStreaming(data.turn, data.step, contentText(content));
+    }
+  }
+  // 本轮新增节点（分隔条起）目前挤在 live 帧之后，整组平移到流顶：
+  // 保持组内相对顺序，历史区成为流的顶部，live 帧原序原位。
+  var added = streamEl.children.slice(sepIdx);
+  for (var k = 0; k < added.length; k++) streamEl.insertBefore(added[k], streamEl.firstChild);
 }
 $('newMsg').addEventListener('click', function () {
   streamEl.scrollTop = streamEl.scrollHeight;

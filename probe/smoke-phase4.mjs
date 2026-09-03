@@ -30,13 +30,20 @@ function makeEl(tag) {
     attrs: {},
     scrollTop: 0, scrollHeight: 0, clientHeight: 0,
     appendChild(c) { c.parentNode = this; this.children.push(c); return c; },
-    insertBefore(c) { c.parentNode = this; this.children.unshift(c); return c; },
+    insertBefore(c, ref) {
+      c.parentNode = this;
+      const i = ref ? this.children.indexOf(ref) : -1;
+      if (i < 0) this.children.unshift(c);
+      else this.children.splice(i, 0, c);
+      return c;
+    },
     remove() {
       if (this.parentNode) {
         const i = this.parentNode.children.indexOf(this);
         if (i >= 0) this.parentNode.children.splice(i, 1);
         this.parentNode = null;
       }
+      if (this.id && liveById[this.id] === this) delete liveById[this.id];
     },
     addEventListener(t, f) { (this.listeners[t] = this.listeners[t] || []).push(f); },
     setAttribute(k, v) { this.attrs[k] = v; },
@@ -68,6 +75,17 @@ function makeEl(tag) {
       return on;
     },
   };
+  // id 赋值即注册（真实 DOM 语义）：getElementById 可查到；remove 时注销
+  let _id = '';
+  Object.defineProperty(el, 'id', {
+    get() { return _id; },
+    set(v) {
+      if (_id && liveById[_id] === el) delete liveById[_id];
+      _id = String(v);
+      if (_id) liveById[_id] = el;
+    },
+    configurable: true,
+  });
   return el;
 }
 function walk(el, fn) {
@@ -81,20 +99,34 @@ function findAll(el, pred) {
   walk(el, (n) => { if (pred(n)) out.push(n); });
   return out;
 }
-const byId = {};
+const byId = {};      // 静态页面元素（启动自动预建）+ 动态 id 注册（makeEl id setter）
+const liveById = {}; // 仅真实注册过的动态 id（el.id = 'x' 赋值即入册；remove 注销）
 const doc = {
   visibilityState: 'visible',
   body: makeEl('body'),
+  // 真实 DOM 语义：只在元素持有该 id 时返回；未注册返回 null。
+  // 页面启动路径访问的静态元素由脚本运行前的 preIds 兜底预建。
   getElementById(id) {
-    if (!byId[id]) byId[id] = makeEl('div');
-    return byId[id];
+    if (liveById[id]) return liveById[id];
+    if (byId[id]) return byId[id];
+    if (PRE_IDS.has(id)) { byId[id] = makeEl('div'); return byId[id]; }
+    return null;
   },
   createElement(tag) { return makeEl(tag); },
   createTextNode(t) { return { nodeType: 3, text: String(t) }; },
   querySelectorAll() { return []; },
   addEventListener() {},
 };
-
+// 页面启动即访问的静态元素清单（与 web/page.html 的 <div id=…> 对齐）
+const PRE_IDS = new Set([
+  'stream', 'toast', 'connDot', 'connText', 'homeView', 'homeTop', 'sumRow', 'sumConn',
+  'sumCount', 'refreshBtn', 'introCard', 'introClose', 'followRow', 'homeList', 'actionPill',
+  'newMsg', 'chatView', 'topbar', 'backBtn', 'chatTitle', 'statusChip', 'approvalBar', 'apText',
+  'apAllow', 'apReject', 'composer', 'input', 'sendBtn', 'shieldBtn', 'ctxBtn', 'ctxInfo',
+  'modelBtn', 'shieldSheet', 'shieldCancel', 'optAsk', 'optAllowAll', 'optDenyAll',
+  'modelSheet', 'modelCancel', 'modelList', 'segWs', 'segTime', 'newBtn', 'stoppedBanner',
+  'resumeBtn', 'replacedBanner', 'takeoverBtn', 'pairRetryBtn', 'connLostBanner',
+]);
 const storage = () => {
   const m = new Map();
   return {
@@ -367,6 +399,55 @@ check('D1b 双视图关键元素齐备（页面可访问）',
   check('D17k clearStream 清思考块索引', Object.keys(sandbox.thinkBlocks).length === 0
     && Object.keys(sandbox.streamingBubbles).length === 0);
 }
+// D18 历史区渲染（C1 feat(history)）：history 帧 → 顶部「历史」分隔条 + 定稿消息
+{
+  sandbox.clearStream();
+  sandbox.state.sessionId = 'session-h1';
+  // 先渲染一条 live 帧（模拟缓冲回放先到），历史后到应前插其上
+  sandbox.handleSession({ type: 'user/message', data: { source: { kind: 'user' }, content: [{ type: 'text', text: 'live 消息' }] } });
+  const before = byId.stream.children.length;
+  sandbox.renderHistoryFrame({
+    sessionId: 'session-h1',
+    count: 2, more: true,
+    messages: [
+      { type: 'user/message', time: 1700000000000, data: { source: { kind: 'user' }, content: [{ type: 'text', text: '历史提问' }] } },
+      { type: 'assistant/message', time: 1700000001000, data: { message: { content: [{ type: 'reasoning', text: '历史思考' }, { type: 'text', text: '历史回答' }] } } },
+    ],
+  });
+  const stream = byId.stream;
+  const sepIdx = stream.children.findIndex((c) => c.id === 'histSep');
+  const liveIdx = stream.children.findIndex((c) => (c.textContent || '').includes('live 消息'));
+  check('D18 历史分隔条存在且位于 live 消息之上', sepIdx >= 0 && liveIdx > sepIdx,
+    'sep=' + sepIdx + ' live=' + liveIdx
+    + ' children=' + JSON.stringify(stream.children.map((c) => c.id || c.className)));
+  const sep = sepIdx >= 0 ? stream.children[sepIdx] : null;
+  check('D18b 分隔条文案', !!sep && sep.textContent === '—— 历史（更早未显示） ——',
+    'text=' + (sep && sep.textContent));
+  // 历史消息应在分隔条之前（流的顶部），live 帧之后
+  const texts = stream.children.map((c) => (c.className === 'bubble' ? c.textContent : ''));
+  check('D18c 历史消息渲染到分隔条之上', /历史提问/.test(stream.children.slice(0, sepIdx).map((c) => c.textContent).join(''))
+    && /历史回答/.test(stream.children.slice(0, sepIdx).map((c) => c.textContent).join('')),
+    JSON.stringify(stream.children.map((c) => c.textContent).slice(0, 6)));
+  check('D18d live 消息在分隔条之下（顺序不被破坏）',
+    /live 消息/.test(stream.children.slice(sepIdx).map((c) => c.textContent).join('')));
+  // 历史 assistant 带 reasoning → 思考块定稿
+  const histThink = Object.keys(sandbox.thinkBlocks).length === 1
+    && Object.values(sandbox.thinkBlocks)[0].sum.textContent === '🤔 已思考 · 1 行 · 4 字';
+  check('D18e 历史思考块定稿（收起 + 摘要）', histThink,
+    'sum=' + (Object.values(sandbox.thinkBlocks)[0] || {}).sum);
+  // 重复推送 → 去重（不重复渲染）
+  const n1 = stream.children.length;
+  sandbox.renderHistoryFrame({ sessionId: 'session-h1', messages: [
+    { type: 'user/message', time: 1, data: { content: [{ type: 'text', text: '再来一条' }] } }] });
+  check('D18f 重复历史帧去重', stream.children.length === n1);
+  // 已切走的会话（sessionId 不匹配）→ 丢弃
+  sandbox.renderHistoryFrame({ sessionId: 'session-other', messages: [
+    { type: 'user/message', time: 1, data: { content: [{ type: 'text', text: '迟到帧' }] } }] });
+  check('D18g 迟到历史（已切走）丢弃', stream.children.length === n1);
+  // clearStream 清掉历史区（切换会话场景）
+  sandbox.clearStream();
+  check('D18h clearStream 清历史区', byId.stream.children.length === 0);
+}
 
 // ── E 组：后端 /sessions 补 lastAt ─────────────────────────────────────────
 console.log('\n[E] 后端 /sessions（mock ctx）');
@@ -494,6 +575,75 @@ check('E2 事件后 lastAt 更新（仅活跃会话）', a && a.lastAt > 0 && b2
   await E.routes.get('/mobile-remote/new')(mockReq('/mobile-remote/new', 'POST', { token: 'testtoken123', cwd: 'D:/work/explicit' }), resN3);
   check('E5b 请求体显式 cwd 以请求为准', resN3.statusCode === 200 && calls[2] !== undefined && calls[2].cwd === 'D:/work/explicit',
     JSON.stringify(calls[2]));
+}
+
+// E6 历史回读（C1 feat(history)）：readSession → history 帧（SSE 建连/切换触发）
+{
+  // SSE mock res：收集 write 帧（真实 handler 只用 write 持续推送）
+  function sseRes() {
+    return {
+      statusCode: 0, frames: [],
+      writeHead(c) { this.statusCode = c; }, setHeader() {},
+      write(chunk) { this.frames.push(String(chunk)); return true; },
+      end() {},
+    };
+  }
+  const frameText = (res) => res.frames.join('');
+  // 会话数据：35 条消息（含 chunk 噪声应被跳过、reasoning 定稿应保留）
+  const histEvents = [];
+  for (let i = 0; i < 30; i++) {
+    histEvents.push({ type: 'user/message', seq: i * 2, time: 1700000000000 + i * 1000,
+      data: { source: { kind: 'user' }, content: [{ type: 'text', text: '问' + i }] } });
+    histEvents.push({ type: 'assistant/message', seq: i * 2 + 1, time: 1700000000100 + i * 1000,
+      data: { message: { content: [{ type: 'text', text: '答' + i }] } } });
+  }
+  histEvents.push({ type: 'assistant/chunk', seq: 99, time: 1, data: { turn: 0, step: 0, chunk: { type: 'text-delta', index: 0, text: 'x' } } });
+  let readCalls = 0;
+  world.sessionQuery.readSession = async (sid) => {
+    readCalls++;
+    if (sid === 'session-e4b') throw new Error('persistence corrupt'); // 读失败静默降级
+    return { session: { id: sid, createdAt: '2026-09-01T10:00:00Z', cwd: 'D:/work/proj-a' }, events: histEvents };
+  };
+  // 先切到 session-e4a 并发一条事件（缓冲 1 帧 < 30 → 触发回读）
+  E.listeners.get('session/event')({ header: { id: 'session-e4a' } }, {
+    type: 'user/message', data: { source: { kind: 'user' }, content: [{ type: 'text', text: 'live' }] } });
+  // SSE 建连（?since 缺省 → 回放缓冲 + history）
+  const resSse = sseRes();
+  const reqSse = mockReq('/mobile-remote/sse?token=testtoken123', 'GET', null);
+  await E.routes.get('/mobile-remote/sse')(reqSse, resSse);
+  await new Promise((r) => setTimeout(r, 20)); // 等 maybeSendHistory 异步完成
+  const histFrame = resSse.frames.filter((f) => f.startsWith('event: history'))[0];
+  check('E6 SSE 建连发 history 帧', !!histFrame, 'frames=' + JSON.stringify(resSse.frames.map((f) => f.split('\n')[0])));
+  if (histFrame) {
+    const payload = JSON.parse(histFrame.split('\ndata: ')[1]);
+    check('E6b history 只含定稿消息（chunk 过滤）且封顶 30 条',
+      payload.messages.every((m) => m.type === 'user/message' || m.type === 'assistant/message')
+      && payload.messages.length === 30,
+      'len=' + payload.messages.length + ' types=' + JSON.stringify([...new Set(payload.messages.map((m) => m.type))]));
+    check('E6c history 是最近 30 条（尾部对齐）',
+      payload.messages[payload.messages.length - 1].data.message.content[0].text === '答29',
+      'last=' + JSON.stringify(payload.messages[payload.messages.length - 1]));
+    check('E6d sessionId 标注（与绑定一致）', typeof payload.sessionId === 'string' && payload.sessionId.length > 0,
+      'sid=' + payload.sessionId);
+  }
+  check('E6e readSession 被调用（缓冲 < 30 触发）', readCalls >= 1, 'calls=' + readCalls);
+  // 读失败静默降级：切到 session-e4b（readSession 抛错），SSE 仍正常建连、无 history 帧、不抛
+  const resSw2 = mockRes();
+  await E.routes.get('/mobile-remote/switch')(mockReq('/mobile-remote/switch', 'POST', { token: 'testtoken123', sessionId: 'session-e4b' }), resSw2);
+  check('E6f 切换到读失败会话不阻塞（降级为现状）', resSw2.statusCode === 200,
+    'sw=' + resSw2.statusCode + ' ' + resSw2.body);
+  // 无 readSession 服务（宿主缺失）→ 静默降级不抛
+  const savedRead = world.sessionQuery.readSession;
+  delete world.sessionQuery.readSession;
+  const resSse2 = sseRes();
+  let threw = '';
+  try { await E.routes.get('/mobile-remote/sse')(mockReq('/mobile-remote/sse?token=testtoken123', 'GET', null), resSse2); }
+  catch (e) { threw = String(e); }
+  await new Promise((r) => setTimeout(r, 10));
+  check('E6g 宿主无 readSession 静默降级（SSE 正常、无 history 帧）',
+    threw === '' && !resSse2.frames.some((f) => f.startsWith('event: history')),
+    threw || 'has history frame');
+  world.sessionQuery.readSession = savedRead;
 }
 
 console.log('\n结果：' + pass + ' PASS / ' + fail + ' FAIL');

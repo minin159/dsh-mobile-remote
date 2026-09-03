@@ -87,6 +87,10 @@ const DEFAULTS = {
 /** 优3b 修正：/new 新建会话的默认工作区（C1 真机反馈：原先沿用当前绑定会话目录，
  *  用户期望统一落 D 盘；本轮不做设置页配置项，按常量收口）。 */
 const NEW_SESSION_CWD = 'D:\\';
+/** 历史回读拉取上限（C1 feat(history)）：进入会话时从 readSession 拉最近 30 条。 */
+const HISTORY_PULL_MAX = 30;
+/** 缓冲低于该帧数才触发历史回读（缓冲已覆盖近期窗口就不重复拉）。 */
+const HISTORY_RING_MIN = 30;
 
 /** 环形缓冲上限：每会话缓存最近 200 条转发帧，供断线/整页重载/切换会话后补发。 */
 const RING_CAP = 200;
@@ -609,6 +613,117 @@ export function apply(ctx, config) {
       const sc = ctx.get('sessionController');
       return Boolean(sc && typeof sc.create === 'function');
     } catch {
+      return false;
+    }
+  }
+
+  // ── 历史回读（C1 feat(history)）：sessionQuery.readSession 拉最近历史 ──
+  // 载荷形状已核实（宿主 dsh-session-query 源码 + live 优先）：
+  //   readSession(sid) → { session: header, events: [{type, seq, time, data, ...}] }
+  // live 会话 events 含 assistant/chunk + assistant/message + user/message 全量
+  // （Session.append 直入 log，Session.events 快照无过滤）；持久化会话经
+  // decodeStorageRecord 还原为原始事件。事件类型与 SSE 帧同一来源，渲染可复用。
+  /**
+   * 拉一个会话的最近历史消息（供页面历史区渲染）。
+   * 只挑页面可渲染的消息型事件（user/assistant 定稿 + reasoning），跳过
+   * chunk 流式增量（定稿消息足够还原对话；chunk 属传输层冗余）。
+   * @returns {Array<{type,data,time}>|null} 时间升序消息事件；读失败/无服务返回 null（静默降级）
+   */
+  async function readRecentHistory(sid) {
+    if (!sid) return null;
+    let q = null;
+    try {
+      q = ctx.get('sessionQuery');
+      if (!q || typeof q.readSession !== 'function') return null;
+    } catch {
+      return null;
+    }
+    try {
+      const loaded = await q.readSession(sid);
+      const events = Array.isArray(loaded?.events) ? loaded.events : [];
+      const msgs = [];
+      for (const ev of events) {
+        const type = String(ev?.type || '');
+        if (type !== 'user/message' && type !== 'assistant/message') continue;
+        const data = ev?.data;
+        if (!data || typeof data !== 'object') continue;
+        // 只保留有实际文本的消息（空 user 帧/纯 tool-result 的 user 壳不渲染）
+        const content = data.message?.content || data.content;
+        const text = contentTextOf(content);
+        const reasoning = reasoningTextOf(content);
+        if (!text && !reasoning) continue;
+        msgs.push({ type, data, time: typeof ev.time === 'number' ? ev.time : 0 });
+      }
+      return msgs.slice(-HISTORY_PULL_MAX);
+    } catch (error) {
+      // 读失败静默降级为现状（仅环形缓冲回放），不阻塞连接与切换
+      console.warn(PLUGIN_TAG, '历史回读失败（降级为缓冲回放）:', msgOf(error));
+      return null;
+    }
+  }
+
+  /** content 块数组里的 text 文本（与页面 contentText 同构的服务端版）。 */
+  function contentTextOf(content) {
+    if (typeof content === 'string') return content;
+    if (!Array.isArray(content)) return '';
+    let out = '';
+    for (const b of content) {
+      if ((b?.kind || b?.type) === 'text' && typeof b.text === 'string') out += (out ? '\n' : '') + b.text;
+    }
+    return out;
+  }
+
+  /** content 块数组里的 reasoning 文本（与页面 reasoningTextOf 同构的服务端版）。 */
+  function reasoningTextOf(content) {
+    if (!Array.isArray(content)) return '';
+    for (const b of content) {
+      if ((b?.kind || b?.type) === 'reasoning' && typeof b.text === 'string') return b.text;
+    }
+    return '';
+  }
+
+  /**
+   * 历史区推送：进入/切换会话时环形缓冲不足 30 条则拉 readSession 补历史。
+   * 以独立 `history` SSE 帧发送（带 since 游标语义无关，页面渲染为历史区，
+   * 不与决策 12 的环形缓冲/游标补发体系交叉）；缓冲已足量时不发（近期
+   * 窗口已覆盖）。失败静默，不发空帧。
+   */
+  async function maybeSendHistory(conn, sid) {
+    if (!conn || !sid) return;
+    try {
+      const buffered = ringFor(sid).length;
+      if (buffered >= HISTORY_RING_MIN) return; // 缓冲已覆盖近期窗口
+      const msgs = await readRecentHistory(sid);
+      if (!msgs || msgs.length === 0) return;
+      // 只发缓冲里没有的更早消息：缓冲覆盖的是尾部（若缓冲非空，去掉与
+      // 已回放内容重叠的尾部——按事件类型粗对齐不可靠，简单策略：缓冲
+      // 非空时按「同长度尾部对齐」裁剪，避免明显重复）。
+      let send = msgs;
+      if (buffered > 0 && msgs.length > 1) {
+        const overlap = Math.min(buffered, msgs.length);
+        send = msgs.slice(0, msgs.length - Math.floor(overlap / 2));
+      }
+      if (send.length === 0) return;
+      const ok = writeSse(conn, 'history', {
+        sessionId: sid,
+        count: send.length,
+        more: msgs.length > send.length,
+        messages: send,
+      });
+      if (ok) console.log(PLUGIN_TAG, `历史回读 ${sid} → ${send.length} 条（缓冲 ${buffered} 帧）`);
+    } catch (error) {
+      console.warn(PLUGIN_TAG, '历史区推送失败（降级）:', msgOf(error));
+    }
+  }
+
+  /** 直写一条 SSE 帧到指定连接（不经 sendFrame 的 activeConn 单例约束）。 */
+  function writeSse(conn, eventName, data) {
+    if (!conn || conn.dead) return false;
+    try {
+      conn.res.write(`event: ${eventName}\ndata: ${JSON.stringify(data)}\n\n`);
+      return true;
+    } catch {
+      handleDeadConn(conn);
       return false;
     }
   }
@@ -1310,6 +1425,9 @@ export function apply(ctx, config) {
               }
             }
             conn.cursorBySid.set(boundSid, maxSeq);
+            // 历史回读（C1）：缓冲不足时补 readSession 最近历史（异步不阻塞建连；
+            // 失败静默降级为现状）。注意在 hello 之前发会让页面先渲染历史区，
+            // 但 history 帧独立于游标体系，先后到达都能正确渲染。
           }
           const s = st();
           sendFrame('hello', {
@@ -1333,6 +1451,8 @@ export function apply(ctx, config) {
             });
           }
           console.log(PLUGIN_TAG, `SSE 建连 #${conn.id} since=${since ?? '-'} 绑定=${boundSid ?? '无'}`);
+          // 历史回读（C1）：hello 之后再推（页面监听器已就绪），异步不阻塞。
+          if (boundSid) maybeSendHistory(conn, boundSid);
           conn.startedAt = Date.now();
           audit('connect', { conn: conn.id, sid: boundSid, since: since });
 
@@ -1822,6 +1942,8 @@ export function apply(ctx, config) {
               }
             }
             conn.cursorBySid.set(boundSid, maxSeq);
+            // 历史回读（C1）：切换进入且缓冲不足时补历史（异步，失败静默）
+            maybeSendHistory(conn, boundSid);
           }
           console.log(PLUGIN_TAG, '切换绑定会话 →', (boundSid || '无') + (sid ? '' : '（跟随电脑）'));
           audit('switch', { from: fromSid, to: boundSid, follow: !sid });
