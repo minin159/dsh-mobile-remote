@@ -147,6 +147,45 @@
 
 ---
 
+## 大任务 C2 · 真机反馈修复轮 II（两条，基于 v1.7.0，目标 6–12 万，红线 12 万）
+
+> 来源：用户真机使用 v1.7.0 的反馈（2026-09-03）。壳侧三问题（顶部小黑条/软键盘遮挡/
+> E 配色对齐）已由主会话直接修复并重建 APK；本任务只修插件侧两条。完成后进入大验收。
+
+```text
+任务：为 DSH 插件 mobile-remote 修复两条真机反馈。工作目录 D:\dsh-plugins\mobile-remote。环境：Windows + Git Bash，node v24 在 PATH。
+开工必读：docs/optimization-tasks.md 的 C1 段（v1.7.0 已修四条）+ docs/probe-findings.md P8/P10 节。
+
+两条修复（各独立 commit）：
+1. fix(new-session): 新建会话 EPERM——cwd 不能指向盘符根目录
+   现状：NEW_SESSION_CWD = 'D:\'（index.js:89），DSH 创建会话时要在 cwd 下
+   ensure project directory（mkdir），对盘符根目录 Windows 返回 EPERM
+   （真机报错原文：failed to ensure project directory "D:" / EPERM mkdir 'D:\'）。
+   改为：NEW_SESSION_CWD = 'D:\dsh-sessions'（固定子目录）；enabled 变 true 时若该目录
+   不存在则 fs.mkdir recursive 创建一次，失败记日志不阻塞；/new 失败的返回信息带上
+   目标目录路径便于定位。
+2. feat(model-picker): 模型切换改小弹窗 + 列表可滑动
+   现状：#modelSheet 是全宽底部大 sheet（page.html:312-334），真机反馈"还是有 bug"且
+   要求小弹窗、可滑动选择。
+   改为：居中小弹窗（宽 min(320px, 86vw)、圆角 14px、半透明遮罩点击关闭，不再全宽
+   贴底）；模型列表区 max-height 40vh + overflow-y auto + -webkit-overflow-scrolling:
+   touch；当前模型行高亮（描边/对勾）；条目 44px 高；点选后弹窗立即关闭并 toast 确认。
+   E 风格令牌（--panel/--press/--sep）沿用，不引入新色。切换逻辑（POST selectModel）
+   一律不动，只改交互形态。
+   真机复测原"bug"：若切换本身仍失败（官方接口报错），把报错原文记入
+   probe-findings.md 追加节再修——先区分"交互形态问题"与"接口问题"，禁止混为一谈。
+
+护栏：红线 12 万 token；两条独立 commit；同一问题重试 ≤2 次；交付前全部冒烟
+（133 断言）全过；模型切换若确认为官方接口侧问题，如实记录汇报，不硬绕。
+
+验收（真机）：新建会话成功且落在 D:\dsh-sessions；模型弹窗为居中小窗、列表可滑动、
+点选即切且下一回合生效。
+交付：版本 1.7.1；roadmap 记录；tag c2-fixes-done。
+预算提示：目标 6–12 万 token。
+```
+
+---
+
 ## 大任务 C2 · 内容层 Apple 化（原大任务 C，优6，目标 10–18 万，红线 15 万）
 
 ```text
