@@ -194,7 +194,10 @@ function loadPageTemplate() {
   }
 }
 
-/** 收集本机 IPv4（局域网 + Tailscale 100.64/10 段），供设置页地址建议。 */
+/** 收集本机 IPv4（局域网 + Tailscale 100.64/10 段），供设置页地址建议。
+ *  排除 169.254/16 link-local（DHCP 失败的自动配置地址，手机永不可达——真机踩坑：
+ *  幽灵网卡把它排进 lan[0]，二维码编出死地址）；lan 只认真 RFC1918 私网段，
+ *  公网/虚拟段不掺入建议源。 */
 function pickLanAddrs() {
   const lan = [];
   const tailscale = [];
@@ -202,8 +205,9 @@ function pickLanAddrs() {
     for (const ifaces of Object.values(networkInterfaces())) {
       for (const it of ifaces || []) {
         if (it.family !== 'IPv4' || it.internal) continue;
+        if (/^169\.254\./.test(it.address)) continue; // link-local 自动配置：永不可达
         if (/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(it.address)) tailscale.push(it.address);
-        else lan.push(it.address);
+        else if (/^(192\.168|10\.|172\.(1[6-9]|2\d|3[01])\.)/.test(it.address)) lan.push(it.address);
       }
     }
   } catch {}
