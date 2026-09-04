@@ -124,7 +124,7 @@ const PRE_IDS = new Set([
   'newMsg', 'chatView', 'topbar', 'backBtn', 'chatTitle', 'statusChip', 'approvalBar', 'apText',
   'apAllow', 'apReject', 'composer', 'input', 'sendBtn', 'shieldBtn', 'ctxBtn', 'ctxInfo',
   'modelBtn', 'shieldSheet', 'shieldCancel', 'optAsk', 'optAllowAll', 'optDenyAll',
-  'modelSheet', 'modelCancel', 'modelList', 'segWs', 'segTime', 'newBtn', 'stoppedBanner',
+  'modelSheet', 'modelMask', 'modelList', 'segWs', 'segTime', 'newBtn', 'stoppedBanner',
   'resumeBtn', 'replacedBanner', 'takeoverBtn', 'pairRetryBtn', 'connLostBanner',
 ]);
 const storage = () => {

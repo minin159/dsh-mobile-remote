@@ -308,20 +308,20 @@
     padding: 8px 12px; border-top: 1px solid rgba(255,69,58,.3);
   }
   body.view-chat.shield-allow #shieldBanner { display: block; }
-  /* 盾牌档位选择弹层（底部动作面板）；优2 模型弹层共用同一套面板样式 */
-  #shieldSheet, #modelSheet {
+  /* 盾牌档位选择弹层（底部动作面板；优2 原共用面板样式，C2 起模型层独立为居中小弹窗） */
+  #shieldSheet {
     display: none; position: fixed; left: 0; right: 0; bottom: 0; z-index: 45;
     background: var(--panel); border-top: 0;
     border-radius: 16px 16px 0 0; padding: 8px 16px calc(16px + env(safe-area-inset-bottom));
     box-shadow: var(--shadow);
   }
   /* 底部动作面板：iOS sheet 形态（顶部抓手） */
-  #shieldSheet::before, #modelSheet::before {
+  #shieldSheet::before {
     content: ""; display: block; width: 36px; height: 5px; border-radius: 3px;
     background: var(--press); margin: 2px auto 10px;
   }
-  #shieldSheet.show, #modelSheet.show { display: block; }
-  #shieldSheet h3, #modelSheet h3 { margin: 0 0 8px; font-size: 13px; color: var(--muted); font-weight: 600; }
+  #shieldSheet.show { display: block; }
+  #shieldSheet h3 { margin: 0 0 8px; font-size: 13px; color: var(--muted); font-weight: 600; }
   .shieldOpt {
     display: block; width: 100%; text-align: left; margin: 8px 0;
     border: 0; border-radius: 12px; background: var(--panel2);
@@ -331,14 +331,51 @@
   .shieldOpt.cur { box-shadow: inset 0 0 0 2px var(--ink); }
   .shieldOpt.danger { color: var(--bad); }
   .shieldOpt.danger small { color: var(--bad); opacity: .75; }
-  #shieldCancel, #modelCancel {
+  #shieldCancel {
     display: block; width: 100%; margin-top: 12px; border: 0; background: var(--panel2);
     color: var(--ink); font-size: 15px; font-weight: 600; padding: 13px; border-radius: 12px;
   }
-  /* 优2 模型弹层：当前模型行 + 分组标题 */
-  #modelCur { font-size: 13px; color: var(--ink); margin-bottom: 2px; }
-  #modelNote { font-size: 12px; color: var(--muted); margin-bottom: 8px; line-height: 1.55; }
-  .modelGroup { font-size: 12px; color: var(--muted); margin: 12px 2px 4px; letter-spacing: .03em; font-weight: 600; }
+  /* ── 优2 模型选择（C2 feat：居中小弹窗，不再全宽贴底 sheet）────────────────
+     真机反馈：全宽大 sheet 不好用（列表不可滑、形态笨重）。改为居中模态弹窗：
+     半透明遮罩点击关闭；模型列表独立滚动区（40vh 封顶 + 触屏惯性滚动）；
+     条目 44px 高；当前模型行描边高亮 + 对勾。令牌沿用风格 E，不引入新色。 */
+  #modelMask {
+    display: none; position: fixed; inset: 0; z-index: 46;
+    background: rgba(0, 0, 0, .55);
+    -webkit-backdrop-filter: saturate(180%) blur(16px); backdrop-filter: saturate(180%) blur(16px);
+  }
+  #modelMask.show { display: block; }
+  #modelSheet {
+    display: none; position: fixed; z-index: 47;
+    left: 50%; top: 50%; transform: translate(-50%, -50%);
+    width: min(320px, 86vw); max-height: 76vh;
+    background: var(--panel); border-radius: 14px; padding: 14px 14px 10px;
+    box-shadow: var(--shadow); flex-direction: column;
+  }
+  #modelSheet.show { display: flex; }
+  #modelSheet h3 { margin: 0 0 8px; font-size: 13px; color: var(--muted); font-weight: 600; }
+  #modelCur { font-size: 13px; color: var(--ink); margin-bottom: 2px; flex-shrink: 0; }
+  #modelNote { font-size: 12px; color: var(--muted); margin-bottom: 8px; line-height: 1.55; flex-shrink: 0; }
+  /* 模型列表滚动区：40vh 封顶 + 触屏惯性滚动（Android WebView 兼容前缀） */
+  #modelList {
+    max-height: 40vh; overflow-y: auto; overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch; flex-shrink: 1;
+    border-top: 1px solid var(--line2); border-bottom: 1px solid var(--line2);
+    padding: 2px 0;
+  }
+  .modelGroup { font-size: 12px; color: var(--muted); margin: 10px 2px 4px; letter-spacing: .03em; font-weight: 600; }
+  /* 模型条目：44px 高（触屏标准），底色按压反馈，当前项描边 + 对勾 */
+  .modelOpt {
+    display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+    margin: 4px 0; border: 0; border-radius: 12px; background: var(--panel2);
+    color: var(--ink); font-size: 14.5px; font-weight: 500;
+    padding: 0 12px; height: 44px;
+    overflow: hidden; white-space: nowrap;
+  }
+  .modelOpt:active { background: var(--press); }
+  .modelOpt .moName { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .modelOpt .moCheck { flex-shrink: 0; color: var(--ink); font-weight: 700; }
+  .modelOpt.cur { box-shadow: inset 0 0 0 2px var(--ink); }
   #hintBar { text-align: center; font-size: 13.5px; color: var(--muted); padding: 24px; line-height: 1.7; }
   /* 轻提示：毛玻璃胶囊 */
   #toast {
@@ -426,13 +463,15 @@
   </footer>
 </div>
 
-<!-- 模型选择弹层（优2）：目录来自官方 llm 服务，切换走官方 selectModel（P8 唯一证实路径） -->
-<div id="modelSheet">
-  <h3>模型</h3>
-  <div id="modelCur">读取中…</div>
-  <div id="modelNote">对绑定会话下一回合生效（不打断进行中的回合）；官方机制会同时把它设为电脑端默认模型。</div>
-  <div id="modelList"></div>
-  <button id="modelCancel">取消</button>
+<!-- 模型选择弹层（优2 · C2 居中小弹窗）：目录来自官方 llm 服务，切换走官方
+     selectModel（P8 唯一证实路径）。半透明遮罩点击关闭；列表区独立滚动。 -->
+<div id="modelMask">
+  <div id="modelSheet">
+    <h3>模型</h3>
+    <div id="modelCur">读取中…</div>
+    <div id="modelNote">对绑定会话下一回合生效（不打断进行中的回合）；官方机制会同时把它设为电脑端默认模型。</div>
+    <div id="modelList"></div>
+  </div>
 </div>
 
 <!-- 盾牌档位选择弹层 -->
@@ -1226,33 +1265,47 @@ function postJSON(path, body) {
   }).then(function (r) { return r.json(); });
 }
 
-// ── 优2：模型切换真控件（P8 官方路径）─────────────────────────────────────
+// ── 优2：模型切换真控件（P8 官方路径 · C2 居中小弹窗）────────────────────
 // 键显隐由 /sessions 的 canModel 能力位驱动（宿主缺 sessionController 时隐藏，优3b 同款）。
 // 弹层每次打开实时 GET /model（目录 + 当前模型），点选 POST 官方 selectModel，下一回合生效。
+// 交互形态（C2 真机反馈修正）：全宽底部大 sheet → 居中小弹窗 + 半透明遮罩点击关闭；
+// 列表区独立滚动（40vh 封顶）。切换协议（GET/POST selectModel）一律未动。
 var modelBtn = $('modelBtn');
 var modelSheet = $('modelSheet');
+var modelMask = $('modelMask');
 var modelPicking = false; // 防连点
 function modelLabel(sel) { return sel ? sel.provider + ' / ' + sel.model : ''; }
 function showModelBtn(v) { modelBtn.style.display = v ? '' : 'none'; }
+function closeModelSheet() {
+  modelSheet.classList.remove('show');
+  modelMask.classList.remove('show');
+}
 modelBtn.addEventListener('click', openModelSheet);
-$('modelCancel').addEventListener('click', function () { modelSheet.classList.remove('show'); });
+// 遮罩点击关闭（弹窗本体阻止冒泡，避免点列表时误关）
+modelMask.addEventListener('click', function (e) {
+  if (e && e.target === modelMask) closeModelSheet();
+});
+modelSheet.addEventListener('click', function (e) {
+  if (e && e.stopPropagation) e.stopPropagation();
+});
 function openModelSheet() {
   if (modelSheet.classList.contains('show')) return;
   $('modelCur').textContent = '读取中…';
   $('modelList').innerHTML = '';
+  modelMask.classList.add('show');
   modelSheet.classList.add('show');
   fetch('/mobile-remote/model?token=' + encodeURIComponent(token))
     .then(function (r) { return r.json(); })
     .then(function (d) {
-      if (handleAuthCode(d && d.code)) { modelSheet.classList.remove('show'); return; }
+      if (handleAuthCode(d && d.code)) { closeModelSheet(); return; }
       if (!(d && d.ok)) {
-        modelSheet.classList.remove('show');
+        closeModelSheet();
         toast('模型列表加载失败：' + ((d && d.message) || '未知错误'));
         return;
       }
       renderModelSheet(d);
     })
-    .catch(function () { modelSheet.classList.remove('show'); toast('网络错误'); });
+    .catch(function () { closeModelSheet(); toast('网络错误'); });
 }
 function renderModelSheet(d) {
   var cur = d.current || null;
@@ -1278,13 +1331,23 @@ function renderModelSheet(d) {
   }
   if (list.childElementCount === 0) list.appendChild(sysLine('模型目录为空'));
 }
-/** 单个模型选项：当前生效项高亮；点选即对绑定会话切换（官方 selectModel）。 */
+/** 单个模型选项（44px 行，当前生效项描边 + 对勾）；点选即对绑定会话切换（官方 selectModel）。 */
 function appendModelOption(list, providerId, m, cur) {
   var mid = m && m.id ? m.id : '';
   if (!mid) return;
+  var isCur = !!(cur && cur.provider === providerId && cur.model === mid);
   var btn = document.createElement('button');
-  btn.className = 'shieldOpt' + (cur && cur.provider === providerId && cur.model === mid ? ' cur' : '');
-  btn.textContent = (m.name && m.name !== mid) ? (m.name + '（' + mid + '）') : mid;
+  btn.className = 'modelOpt' + (isCur ? ' cur' : '');
+  var name = document.createElement('span');
+  name.className = 'moName';
+  name.textContent = (m.name && m.name !== mid) ? (m.name + '（' + mid + '）') : mid;
+  btn.appendChild(name);
+  if (isCur) {
+    var check = document.createElement('span');
+    check.className = 'moCheck';
+    check.textContent = '✓';
+    btn.appendChild(check);
+  }
   btn.addEventListener('click', function () { pickModel(providerId, mid); });
   list.appendChild(btn);
 }
@@ -1296,7 +1359,7 @@ function pickModel(provider, model) {
       modelPicking = false;
       if (handleAuthCode(r && r.code)) return;
       if (r && r.ok) {
-        modelSheet.classList.remove('show');
+        closeModelSheet(); // 点选即关闭 + toast 确认（不等待下一回合）
         toast('已切换：' + modelLabel(r.selected) + '，下一回合生效');
       } else {
         toast((r && r.message) || '切换失败');

@@ -134,13 +134,22 @@ console.log('\n[O2] 模型切换真控件');
 const A = buildCtx({ enabled: true, token: 'testtoken123', relayPort: 0 }, world);
 await new Promise((r) => setTimeout(r, 30));
 
-// O2.1 页面形态：模型键 + 弹层 + 当前模型行/副作用明示
+// O2.1 页面形态：模型键 + 居中小弹窗（C2：遮罩 + 弹窗体）+ 当前模型行/副作用明示
 let res = mockRes();
 await A.prefixes.find((p) => p.path === '/mobile-remote').handler(mockReq('/mobile-remote/p/testtoken123'), res);
 const page = res.body();
-check('O2.1a 页面含模型键/弹层/当前行/副作用明示', page.includes('id="modelBtn"') && page.includes('id="modelSheet"')
-  && page.includes('id="modelCur"') && page.includes('id="modelNote"') && page.includes('id="modelCancel"'));
-check('O2.1b 弹层说明含下一回合生效与全局默认明示', page.includes('下一回合生效') && page.includes('默认模型'));
+check('O2.1a 页面含模型键/弹窗/当前行/副作用明示', page.includes('id="modelBtn"') && page.includes('id="modelSheet"')
+  && page.includes('id="modelCur"') && page.includes('id="modelNote"') && page.includes('id="modelMask"'));
+// O2.1a2 C2 居中小弹窗：遮罩点击关闭 + 列表滚动区 + 44px 条目 + 对勾高亮（协议面不动）
+check('O2.1a2 弹窗为居中小窗形态（遮罩点击关闭 + 滚动列表 + 44px 条目）',
+  page.includes('e.target === modelMask') && page.includes('closeModelSheet')
+  && /#modelList\s*\{[^}]*max-height:\s*40vh[^}]*overflow-y:\s*auto[^}]*-webkit-overflow-scrolling:\s*touch/s.test(page)
+  && /#modelSheet\s*\{[^}]*width:\s*min\(320px,\s*86vw\)/s.test(page)
+  && /\.modelOpt\s*\{[^}]*height:\s*44px/s.test(page)
+  && page.includes('moCheck') && page.includes('✓'));
+check('O2.1a3 切换协议未动（仍 POST selectModel 官方路径）',
+  page.includes("postJSON('/mobile-remote/model'") && page.includes('pickModel'));
+check('O2.1b 弹窗说明含下一回合生效与全局默认明示', page.includes('下一回合生效') && page.includes('默认模型'));
 
 // 建连绑定会话（bindSession 走 pickSession）
 const sseReq = mockReq('/mobile-remote/sse?token=testtoken123');
