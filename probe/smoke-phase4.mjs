@@ -345,58 +345,80 @@ check('D1b 双视图关键元素齐备（页面可访问）',
   check('D16c 切回工作区视图恢复原汇总行', byId.sumCount.textContent === '2 个工作区 · 2 个任务'
     && byId.segWs.classList.contains('on') && !byId.segTime.classList.contains('on'));
 }
-// D17 思考过程可折叠块（C1 feat(thinking)）：流式累积 → 定稿收起 + 摘要 → 展开记忆
+// D17 思考过程自动堆叠（C3 feat(thinking)）：同回合多段堆叠进一个容器——
+// 流式段落追加 → 定稿瘦身摘要行 + 容器收起 → 展开记忆沿用（C1）
 {
   const stream = byId.stream;
   const n0 = stream.children.length;
-  // 流式：两个 reasoning-delta 增量追加到同一块
+  // 流式：step1 两个 delta 同段累积
   sandbox.appendThinking(3, 1, '先分析');
   sandbox.appendThinking(3, 1, '问题\n再列步骤');
-  const tb = sandbox.thinkBlocks['3:1'];
-  check('D17 流式思考块创建并累积', !!tb && tb.el.className === 'thinkBlock'
-    && tb.body.textContent === '先分析问题\n再列步骤'
-    && stream.children[stream.children.length - 1] === tb.el
+  const st1 = sandbox.thinkStacks['3'];
+  check('D17 同回合堆叠容器创建，step1 段累积',
+    !!st1 && st1.el.className === 'thinkBlock'
+    && st1.segs.length === 1 && st1.segs[0].text === '先分析问题\n再列步骤'
+    && st1.body.children[0] === st1.segs[0].el
+    && stream.children[stream.children.length - 1] === st1.el
     && stream.children.length === n0 + 1,
-    'text=' + JSON.stringify(tb && tb.body.textContent));
-  check('D17b 流式摘要行（思考中 + 行数/字数）', tb.sum.textContent === '🤔 思考中… 2 行 · 10 字',
-    'sum=' + tb.sum.textContent);
-  check('D17c 流式期间默认收起（无展开记忆）', !tb.el._classes.has('open'));
-  check('D17d 定稿无 reasoning → 保留流式累积',
-    (() => { sandbox.settleThinking(3, 1, ''); return tb.sum.textContent === '🤔 已思考 · 2 行 · 10 字'
-      && tb.body.textContent === '先分析问题\n再列步骤' && !tb.el._classes.has('open'); })(),
-    'sum=' + tb.sum.textContent);
-  // 定稿带 reasoning 字段以其为准（换行符计入字数：定稿思考\n两行 = 7 字）
-  sandbox.appendThinking(3, 2, '流式内容');
+    'segs=' + JSON.stringify(st1 && st1.segs.map((s) => s.text)));
+  check('D17b 流式摘要条（思考中 + 段数/字数）', st1.sum.textContent === '🤔 思考中… 1 段 · 10 字',
+    'sum=' + st1.sum.textContent);
+  check('D17c 流式期间默认收起（无展开记忆）', !st1.el._classes.has('open'));
+  // 定稿无 reasoning → 保留流式累积为定稿全文（chars 记账不变）
+  sandbox.settleThinking(3, 1, '');
+  check('D17d 定稿无 reasoning → 该段瘦身摘要 + 容器收起',
+    st1.segs[0].text === '先分析问题\n再列步骤' && st1.segs[0].settled === true
+    && /第 1 段 · 2 行 · 10 字/.test(st1.segs[0].el.textContent)
+    && !st1.el._classes.has('open'),
+    'seg=' + st1.segs[0].el.textContent);
+  // 同回合 step2 新段自动堆进同一容器（同 turn 归并）
+  sandbox.appendThinking(3, 2, '定稿思考');
   sandbox.settleThinking(3, 2, '定稿思考\n两行');
-  const tb2 = sandbox.thinkBlocks['3:2'];
-  check('D17e 定稿 reasoning 覆盖流式累积', tb2 && tb2.body.textContent === '定稿思考\n两行'
-    && tb2.sum.textContent === '🤔 已思考 · 2 行 · 7 字' && !tb2.el._classes.has('open'),
-    'text=' + JSON.stringify(tb2 && tb2.body.textContent) + ' sum=' + (tb2 && tb2.sum.textContent));
-  // 无流式内容的思考（空 delta）+ 空定稿 → 块不保留
-  sandbox.showThinking(); // 建块（空文本）
+  const st1b = sandbox.thinkStacks['3'];
+  check('D17e 同回合多段堆叠（一个容器 + 两段纵向）',
+    st1b === st1 && st1b.segs.length === 2
+    && /第 2 段 · 2 行 · 7 字/.test(st1b.segs[1].el.textContent)
+    && st1b.body.children.length === 2,
+    'segs=' + st1b.segs.map((s) => s.el.textContent).join(' | '));
+  check('D17f 堆叠摘要条（思考 · 2 段 · 17 字）', st1b.sum.textContent === '🤔 思考 · 2 段 · 17 字',
+    'sum=' + st1b.sum.textContent);
+  // 无流式内容的思考（空 delta）+ 空定稿 → 容器为空则整体移除
+  sandbox.showThinking(); // 建容器（无段落）
   sandbox.settleThinking(undefined, undefined, '');
-  check('D17f 空定稿且无流式内容 → 块移除', !sandbox.thinkBlocks['?:?']);
-  // 无流式直接定稿（历史补发帧）：直接落定稿态
+  check('D17g 空定稿且无流式内容 → 容器移除', !sandbox.thinkStacks['?']);
+  // 无流式直接定稿（历史补发帧）：直接落一段定稿态
   sandbox.settleThinking(5, 1, '历史思考内容');
-  const tb3 = sandbox.thinkBlocks['5:1'];
-  check('D17g 无流式定稿直接落块', tb3 && tb3.sum.textContent === '🤔 已思考 · 1 行 · 6 字',
-    'sum=' + (tb3 && tb3.sum.textContent));
-  // 展开记忆：localStorage 写入 + 新块跟随
-  const head2 = sandbox.thinkBlocks['5:1'].head;
+  const st3 = sandbox.thinkStacks['5'];
+  check('D17h 无流式定稿直接落段（定稿态摘要）',
+    st3 && /第 1 段 · 1 行 · 6 字/.test(st3.segs[0].el.textContent)
+    && st3.segs[0].settled === true && !st3.el._classes.has('open'),
+    'seg=' + (st3 && st3.segs[0].el.textContent));
+  // 展开记忆：localStorage 写入 + 新回合容器跟随
+  const head2 = sandbox.thinkStacks['5'].head;
   (head2.listeners.click || []).forEach((fn) => fn());
-  check('D17h 点击展开写 localStorage', sandbox.localStorage.getItem('mr-think-fold') === 'open'
-    && sandbox.thinkBlocks['5:1'].el._classes.has('open'));
-  // 流式新块跟随展开偏好；但定稿块被 settleThinking 强制收起，不跟随记忆
-  sandbox.appendThinking(6, 1, '下一块');
-  check('D17i 流式新块跟随展开偏好', sandbox.thinkBlocks['6:1'].el._classes.has('open'));
+  check('D17i 点击展开写 localStorage', sandbox.localStorage.getItem('mr-think-fold') === 'open'
+    && sandbox.thinkStacks['5'].el._classes.has('open'));
+  // 流式新回合容器跟随展开偏好；定稿后容器强制收起，不跟随记忆
+  sandbox.appendThinking(6, 1, '下一回合');
+  check('D17j 流式新容器跟随展开偏好', sandbox.thinkStacks['6'].el._classes.has('open'));
+  // 重放幂等（决策 12 补发场景）：同一段 chunk 重演 + 重复定稿不重复计数
+  sandbox.appendThinking(6, 1, '下一回合'); // 重放同 step 增量
+  sandbox.settleThinking(6, 1, '定稿内容');
+  sandbox.settleThinking(6, 1, '定稿内容'); // 重复定稿帧
+  const st6 = sandbox.thinkStacks['6'];
+  check('D17k 重放幂等（重复定稿不计数漂移）',
+    st6.segs.length === 1 && st6.segs[0].text === '定稿内容'
+    && st6.sum.textContent === '🤔 思考 · 1 段 · 4 字'
+    && /第 1 段 · 1 行 · 4 字/.test(st6.segs[0].el.textContent),
+    'sum=' + st6.sum.textContent + ' seg=' + st6.segs[0].el.textContent);
   // reasoningTextOf：定稿 content 数组提取 reasoning 块
-  check('D17j reasoningTextOf 提取', sandbox.reasoningTextOf([
+  check('D17l reasoningTextOf 提取', sandbox.reasoningTextOf([
     { type: 'text', text: '回答' }, { type: 'reasoning', text: '思考R' }]) === '思考R'
     && sandbox.reasoningTextOf([{ type: 'text', text: 'x' }]) === ''
     && sandbox.reasoningTextOf(undefined) === '');
-  // clearStream 清思考块索引
+  // clearStream 清思考堆叠索引
   sandbox.clearStream();
-  check('D17k clearStream 清思考块索引', Object.keys(sandbox.thinkBlocks).length === 0
+  check('D17m clearStream 清思考堆叠索引', Object.keys(sandbox.thinkStacks).length === 0
     && Object.keys(sandbox.streamingBubbles).length === 0);
 }
 // D18 历史区渲染（C1 feat(history)）：history 帧 → 顶部「历史」分隔条 + 定稿消息
@@ -430,11 +452,12 @@ check('D1b 双视图关键元素齐备（页面可访问）',
     JSON.stringify(stream.children.map((c) => c.textContent).slice(0, 6)));
   check('D18d live 消息在分隔条之下（顺序不被破坏）',
     /live 消息/.test(stream.children.slice(sepIdx).map((c) => c.textContent).join('')));
-  // 历史 assistant 带 reasoning → 思考块定稿
-  const histThink = Object.keys(sandbox.thinkBlocks).length === 1
-    && Object.values(sandbox.thinkBlocks)[0].sum.textContent === '🤔 已思考 · 1 行 · 4 字';
-  check('D18e 历史思考块定稿（收起 + 摘要）', histThink,
-    'sum=' + (Object.values(sandbox.thinkBlocks)[0] || {}).sum);
+  // 历史 assistant 带 reasoning → 思考堆叠定稿（C3：收起 + 段摘要）
+  const histThink = Object.keys(sandbox.thinkStacks).length === 1
+    && /第 1 段 · 1 行 · 4 字/.test(Object.values(sandbox.thinkStacks)[0].segs[0].el.textContent)
+    && Object.values(sandbox.thinkStacks)[0].sum.textContent === '🤔 思考 · 1 段 · 4 字';
+  check('D18e 历史思考段定稿（收起 + 段摘要）', histThink,
+    'segs=' + JSON.stringify((Object.values(sandbox.thinkStacks)[0] || { segs: [] }).segs.map((s) => s.el.textContent)));
   // 重复推送 → 去重（不重复渲染）
   const n1 = stream.children.length;
   sandbox.renderHistoryFrame({ sessionId: 'session-h1', messages: [

@@ -231,6 +231,10 @@
     white-space: pre-wrap; word-break: break-word;
   }
   .thinkBlock.open .thinkBody { display: block; }
+  /* 思考段落行（C3 堆叠）：展开态按段纵向排列；定稿段瘦身为摘要行 */
+  .thinkSeg { padding: 2px 0; }
+  .thinkSeg.settled { font-style: italic; opacity: .85; padding: 1px 0; }
+  .thinkSeg + .thinkSeg { border-top: 1px solid var(--line); margin-top: 3px; padding-top: 5px; }
   /* 回到底部 ↓ FAB（阶段 4：离开底部/新消息时出现，圆形） */
   #newMsg {
     position: fixed; right: 14px; bottom: calc(96px + env(safe-area-inset-bottom));
@@ -662,9 +666,9 @@ function trimStream() {
     if (!node) break;
     var cid = node.getAttribute('data-call');
     if (cid) delete toolLines[cid]; // 同步清理工具行索引，防悬挂引用
-    // 思考块同理：被折叠移除的块从索引清掉（thinkBlockOf 的 parentNode 检查兜底重建）
-    for (var k in thinkBlocks) {
-      if (thinkBlocks[k].el === node) delete thinkBlocks[k];
+    // 思考堆叠同理：被折叠移除的容器从索引清掉（thinkStackOf 的 parentNode 检查兜底重建）
+    for (var k in thinkStacks) {
+      if (thinkStacks[k].el === node) delete thinkStacks[k];
     }
     node.remove();
   }
@@ -829,12 +833,15 @@ function markToolResult(callId, ok) {
     n.textContent = n.textContent.replace('🔧', ok ? '✅' : '❌');
   }
 }
-// ── 思考过程可折叠块（C1 feat(thinking)）────────────────────────────────
-// 流式 reasoning-delta 累积进当前 step 的可折叠块；assistant/message 定稿后
-// 转为收起态（带行数/字数摘要）。reasoning 块与 chunk 均出自同一适配器
-// （宿主 BlockAssembler/ pi-ai thinking_* 全链，载荷形状已核实）。
-// 模型不输出思考时不出现任何块（showThinking 仍兜底老语义：只提示不渲染）。
-var thinkFoldOpen = null; // 用户对思考块的展开偏好：null=默认收起（localStorage 持久化）
+// ── 思考过程自动堆叠（C3 feat(thinking)）────────────────────────────
+// 同一回合内的多个思考段落自动堆叠进一个可折叠容器：收起态合并为一条
+// 紧凑摘要条（"🤔 思考 · N 段 · M 字"），展开后段落纵向排列；历史段
+// 定稿后只留摘要行、不保留全文 DOM（流式期间全文照旧累积，定稿瘦身）。
+// localStorage 折叠偏好沿用（C1）；reasoning 块与 chunk 均出自同一适配器
+// （载荷形状已核实，roadmap 决策 23）；模型不输出思考时不出现任何容器。
+// 重放幂等：环形缓冲补发会重演 chunk/message 帧——段落按 key 归并、
+// 字数按 seg.chars 记账差值修正，重复定稿不产生漂移。
+var thinkFoldOpen = null; // 用户对思考容器的展开偏好：null=默认收起（localStorage 持久化）
 try {
   var _tf = localStorage.getItem('mr-think-fold');
   thinkFoldOpen = _tf === 'open' ? true : (_tf === 'fold' ? false : null);
@@ -848,11 +855,15 @@ function thinkSummaryOf(text) {
   var chars = text ? text.length : 0;
   return lines + ' 行 · ' + chars + ' 字';
 }
-/** 组装/取得流式思考块 DOM（同一 step 复用；流式期间内容实时追加）。 */
-var thinkBlocks = {}; // 'turn:step' → 块对象
-function thinkBlockOf(turn, step) {
-  var key = (turn === undefined ? '?' : turn) + ':' + (step === undefined ? '?' : step);
-  var t = thinkBlocks[key];
+/** 堆叠摘要：段数 + 总字数（收起态的一条紧凑摘要条）。 */
+function stackSummaryOf(entry) {
+  return entry.segs.length + ' 段 · ' + entry.chars + ' 字';
+}
+/** 组装/取得本回合的思考堆叠容器（同一 turn 复用；段落追加进 thinkBody）。 */
+var thinkStacks = {}; // turn → 堆叠对象（C3：每回合一个容器，替代 C1 的每 step 一块）
+function thinkStackOf(turn) {
+  var key = turn === undefined ? '?' : turn;
+  var t = thinkStacks[key];
   if (!t || !t.el.parentNode) {
     var el = document.createElement('div');
     el.className = 'thinkBlock';
@@ -869,10 +880,9 @@ function thinkBlockOf(turn, step) {
     body.className = 'thinkBody';
     el.appendChild(head);
     el.appendChild(body);
-    // 折叠态记忆：用户展开过（thinkFoldOpen===true）则新块默认展开；
+    // 折叠态记忆：用户展开过（thinkFoldOpen===true）则新容器默认展开；
     // 收起偏好（false）与无记忆（null=默认收起）都从收起开始。
-    var open = thinkFoldOpen === true;
-    setThinkOpen(el, open);
+    setThinkOpen(el, thinkFoldOpen === true);
     head.addEventListener('click', function () {
       var nowOpen = !el.classList.contains('open');
       setThinkOpen(el, nowOpen);
@@ -880,7 +890,8 @@ function thinkBlockOf(turn, step) {
       if (nowOpen) afterAppend(true); // 展开动作本身触发滚底（用户明确在看）
     });
     streamEl.appendChild(el);
-    t = thinkBlocks[key] = { el: el, head: head, caret: caret, sum: sum, body: body, text: '', live: true };
+    t = thinkStacks[key] = { el: el, head: head, caret: caret, sum: sum, body: body,
+      segs: [], chars: 0, live: true };
     afterAppend();
   }
   return t;
@@ -890,39 +901,67 @@ function setThinkOpen(el, open) {
   var caret = el.querySelector('.thinkCaret');
   if (caret && caret.textContent !== undefined) caret.textContent = open ? '▾' : '▸';
 }
-/** 流式思考增量：追加文本；展开态才自动滚底（收起态不打扰阅读位置）。 */
+/** 流式思考增量：进当前 step 的段落（段未建则建；容器按 turn 归并）；
+ *  展开态才自动滚底（收起态不打扰阅读位置）。 */
 function appendThinking(turn, step, text) {
-  var t = thinkBlockOf(turn, step);
-  t.text += text;
-  t.body.textContent = t.text;
-  t.sum.textContent = '🤔 思考中… ' + thinkSummaryOf(t.text);
-  if (t.el.classList.contains('open')) afterAppend();
-}
-/** 定稿：reasoning 字段（若定稿消息携带）覆盖流式累积；转收起态 + 摘要行。 */
-function settleThinking(turn, step, reasoning) {
-  var key = (turn === undefined ? '?' : turn) + ':' + (step === undefined ? '?' : step);
-  var t = thinkBlocks[key];
-  if (t) {
-    if (typeof reasoning === 'string' && reasoning) t.text = reasoning;
-    t.live = false;
-    if (!t.text) { t.el.remove(); delete thinkBlocks[key]; return; }
-    t.body.textContent = t.text;
-    t.sum.textContent = '🤔 已思考 · ' + thinkSummaryOf(t.text);
-    setThinkOpen(t.el, false); // 定稿默认收起（点击可再展开）
-  } else if (typeof reasoning === 'string' && reasoning) {
-    // 无流式过程（补发历史帧/模型一次性给出）：直接落一条定稿态思考块
-    var blk = thinkBlockOf(turn, step);
-    blk.text = reasoning;
-    blk.live = false;
-    blk.body.textContent = reasoning;
-    blk.sum.textContent = '🤔 已思考 · ' + thinkSummaryOf(reasoning);
-    setThinkOpen(blk.el, false);
-    afterAppend();
+  var entry = thinkStackOf(turn);
+  var segKey = step === undefined ? '?' : step;
+  var seg = entry.segs[entry.segs.length - 1];
+  if (!seg || seg.key !== segKey) {
+    var p = document.createElement('div');
+    p.className = 'thinkSeg';
+    entry.body.appendChild(p);
+    seg = { key: segKey, el: p, text: '', chars: 0, settled: false };
+    entry.segs.push(seg);
   }
+  seg.text += text;
+  seg.chars += text.length;
+  entry.chars += text.length;
+  if (!seg.settled) seg.el.textContent = seg.text; // 定稿段的重放增量只入账不回显
+  entry.sum.textContent = '🤔 思考中… ' + stackSummaryOf(entry);
+  if (entry.el.classList.contains('open')) afterAppend();
+}
+/** 定稿：reasoning 字段（若定稿消息携带）覆盖该段流式累积；该段瘦身为
+ *  摘要行（全文弃置 DOM，JS 侧保留以供重放幂等）；全部段落定稿后容器转收起态。 */
+function settleThinking(turn, step, reasoning) {
+  var key = turn === undefined ? '?' : turn;
+  var entry = thinkStacks[key] || thinkStackOf(turn);
+  var segKey = step === undefined ? '?' : step;
+  var seg = null;
+  for (var i = entry.segs.length - 1; i >= 0; i--) {
+    if (entry.segs[i].key === segKey) { seg = entry.segs[i]; break; }
+  }
+  if (!seg && typeof reasoning === 'string' && reasoning) {
+    // 无流式过程（历史补发帧/模型一次性给出）：直接落一段定稿态
+    var p = document.createElement('div');
+    p.className = 'thinkSeg';
+    entry.body.appendChild(p);
+    seg = { key: segKey, el: p, text: '', chars: 0, settled: false };
+    entry.segs.push(seg);
+  }
+  if (!seg) {
+    // 该 step 无思考内容（空 delta + 空定稿）：容器因此为空则整体移除
+    if (entry.segs.length === 0) { entry.el.remove(); delete thinkStacks[key]; }
+    return;
+  }
+  var finalText = (typeof reasoning === 'string' && reasoning) ? reasoning : seg.text;
+  if (finalText.length !== seg.chars) {
+    entry.chars += finalText.length - seg.chars; // 定稿覆盖流式累积：按记账差值校正总字数
+    seg.chars = finalText.length;
+  }
+  seg.text = finalText;
+  seg.el.textContent = '第 ' + (entry.segs.indexOf(seg) + 1) + ' 段 · ' + thinkSummaryOf(finalText);
+  seg.settled = true;
+  seg.el.classList.add('settled');
+  var latest = entry.segs[entry.segs.length - 1];
+  entry.live = !latest.settled;
+  entry.sum.textContent = (entry.live ? '🤔 思考中… ' : '🤔 思考 · ') + stackSummaryOf(entry);
+  if (!entry.live) setThinkOpen(entry.el, false); // 回合思考全部定稿：转收起态（点击可再展开）
+  afterAppend();
 }
 function showThinking() {
-  // 兜底：块未建（如极早期帧）时建块并给提示文案（老语义的升级形态）
-  thinkBlockOf(undefined, undefined);
+  // 兜底：容器未建（如极早期帧）时建容器（老语义的升级形态）
+  thinkStackOf(undefined);
 }
 
 // ── 流式"当前动作"pill（阶段 4）：仿 ZCode 运行中的动作摘要 ─────────────
@@ -1463,7 +1502,7 @@ function clearStream() {
   streamEl.innerHTML = '';
   streamingBubbles = {};
   toolLines = {};
-  thinkBlocks = {}; // 思考块随消息流一起清（切会话/重绑）
+  thinkStacks = {}; // 思考堆叠随消息流一起清（切会话/重绑）
   state.nearBottom = true;
   $('newMsg').classList.remove('show');
   $('actionPill').classList.remove('show');
