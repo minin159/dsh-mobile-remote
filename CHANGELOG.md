@@ -1,5 +1,40 @@
 # Changelog
 
+## 1.7.1 (2026-09-04)
+
+C2 · 真机反馈修复轮 II（两条，基于 v1.7.0）。每条独立 commit：
+`21177f4`（新建会话 EPERM）→ `e6f192a`（模型小弹窗）。壳侧三问题
+（顶部小黑条/软键盘遮挡/E 配色对齐）已由主会话另行修复并重建 APK。
+
+### 修复
+
+- **新建会话 EPERM（真机阻塞）**：`/new` 默认 cwd 曾为 `D:\`（盘符根），
+  DSH `create` 要在 cwd 下 ensure project directory（mkdir），Windows 对
+  盘符根直接返回 EPERM（真机报错：`failed to ensure project directory
+  "D:" / EPERM mkdir 'D:\'`）。改为固定子目录 `D:\dsh-sessions`：
+  - enabled 变 true 时（设置热切换/进程启动预建/`/new` 路径兜底三处）
+    `fs.mkdir recursive` 创建一次，失败只记日志不阻塞；
+  - `/new` 失败的 502 返回附带目标目录路径，便于真机定位；
+  - 请求体显式 `cwd` 仍以请求为准（官方参数面不变）。
+
+### 新增
+
+- **模型切换改居中小弹窗**：真机反馈全宽底部大 sheet「还是有 bug」且不好
+  用——要求小弹窗、可滑动选择。`#modelSheet` 重构为居中模态弹窗：宽
+  `min(320px, 86vw)`、圆角 14px、max-height 76vh；半透明毛玻璃遮罩点击
+  关闭（弹窗体阻止冒泡防误关）；模型列表独立滚动区（`max-height 40vh +
+  overflow-y auto + -webkit-overflow-scrolling: touch +
+  overscroll-behavior: contain`）；条目 44px 高（触屏标准）；当前模型行
+  描边高亮 + 对勾；点选成功立即关闭并 toast 确认。**切换协议未动**（GET
+  /model + POST 官方 `selectModel`，P8 唯一证实路径）；风格 E 令牌沿用，
+  不引入新色；shieldSheet 保持底部 sheet 形态不动。
+
+### 冒烟
+
+- 全量 136 PASS / 0 FAIL（phase2 26 + phase4 70 + phase5 19 + opt2 21）；
+  本轮新增断言：E7（create 失败报错带目标目录）、O2.1a2（弹窗形态）、
+  O2.1a3（切换协议未动）。
+
 ## 1.7.0 (2026-09-03)
 
 C1 · 真机反馈修复轮（四条，基于 v1.6.0）。每条独立 commit，全部落地：
