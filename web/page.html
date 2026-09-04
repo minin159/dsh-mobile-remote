@@ -564,6 +564,7 @@ var state = {
   rowChips: {},              // sid → 任务行状态胶囊（SSE 状态帧增量更新）
   rowRows: {},               // sid → 任务行元素（绑定高亮增量更新）
   pinned: null,              // 手机端钉住的会话（非空时首页显示"跟随电脑"入口）
+  newCreatedSid: null,       // 本页面 /new 创建且尚未发过消息的会话（C3：空会话不存档）
   foldMap: {},               // 折叠的工作区 cwd → true（localStorage 持久化）
   homeMode: 'ws',            // 首页视图（优3）：'ws'=按工作区 / 'time'=按时间线
   lastHomeFetch: 0,          // 首页数据节流（3s）
@@ -1239,6 +1240,7 @@ function send() {
       if (r && r.ok) {
         inputEl.value = '';
         inputEl.style.height = 'auto';
+        state.newCreatedSid = null; // C3：已发首条消息，会话不再属于"空会话"
         // 消息本体经 session/event 流回来渲染，这里不重复插气泡
       } else {
         toast(sendErrText(r));
@@ -1809,6 +1811,7 @@ function saveFolds() {
 /** 任务行/跟随行点击 → 进入会话视图。已绑定会话直接切视图（保留流与滚动）；
  *  其余走 POST /switch（服务端确认即先切视图兜底，bound 帧到达后再清流补发）。 */
 function openSession(sid) {
+  dropNewSessionIfEmpty(); // C3：切走前若有零输入新建会话则丢弃（页面端校验）
   if (state.sessionId === sid) { showView('chat'); return; }
   postJSON('/mobile-remote/switch', { token: token, sessionId: sid })
     .then(function (r) {
@@ -1833,6 +1836,7 @@ function createSession() {
       if (handleAuthCode(r && r.code)) return;
       if (!(r && r.ok)) { toast('新建失败：' + ((r && r.message) || '未知错误')); return; }
       state.pinned = r.sessionId; // 服务端已钉住，页面同步（跟随行不显示）
+      state.newCreatedSid = r.sessionId; // C3：记录待观察的空会话（发过消息后清除）
       renderFollowRow();
       setSession(r.sessionId, r.cwd);
       updateHomeBound();
@@ -1843,6 +1847,40 @@ function createSession() {
     .catch(function () { btn.disabled = false; toast('网络错误'); });
 }
 $('newBtn').addEventListener('click', createSession);
+
+// ── 空会话不存档（C3 feat(new-session)）────────────────────────────────
+// /new 建的会话若从未发过消息（用户直接离开/切换/断开）→ 自动 drop，不存档。
+// 页面端第一道校验：只对「本页面 /new 创建且消息数为 0」的会话发 POST /drop；
+// 服务端复核「确为本插件所建 + 无 user/message 事件」后调 sessionController.drop
+// （双端校验防误删）。drop 失败静默（会话残留无害），fire-and-forget 不阻塞交互。
+/** 消息流里是否已有用户消息（有即非空会话，不丢弃）。 */
+function streamHasUserMsg() {
+  for (var i = 0; i < streamEl.children.length; i++) {
+    var c = streamEl.children[i];
+    if (c && c.className === 'row me' && (c.textContent || '').trim()) return true;
+  }
+  return false;
+}
+/** 条件性丢弃空会话：消息数为 0 才发起；无论结果都清 newCreatedSid（残留无害）。 */
+function dropNewSessionIfEmpty() {
+  var sid = state.newCreatedSid;
+  if (!sid) return;
+  state.newCreatedSid = null;
+  if (sid === state.sessionId && streamHasUserMsg()) return; // 已有对话内容：不丢
+  var body = JSON.stringify({ token: token, sessionId: sid });
+  if (typeof navigator !== 'undefined' && navigator.sendBeacon) {
+    // sendBeacon：页面卸载路径（pagehide）普通 fetch 会被浏览器取消
+    try {
+      navigator.sendBeacon('/mobile-remote/drop', new Blob([body], { type: 'application/json' }));
+      return;
+    } catch (e) {}
+  }
+  postJSON('/mobile-remote/drop', { token: token, sessionId: sid })
+    .then(function (r) { if (handleAuthCode(r && r.code)) return; })
+    .catch(function () {});
+}
+// 触发点：关闭/隐藏页面（含息屏整页重载前的 pagehide）
+window.addEventListener('pagehide', dropNewSessionIfEmpty);
 
 // ── 连接管理 ─────────────────────────────────────────────────────────────
 function setConn(cls, text) {
@@ -2047,7 +2085,8 @@ streamEl.addEventListener('scroll', function () {
   state.nearBottom = nearBottom();
   $('newMsg').classList.toggle('show', !state.nearBottom);
 });
-$('backBtn').addEventListener('click', function () { showView('home'); });
+// 会话视图顶栏 ← 返回 = 回首页：空新建会话在此刻丢弃（C3 触发点）
+$('backBtn').addEventListener('click', function () { dropNewSessionIfEmpty(); showView('home'); });
 $('refreshBtn').addEventListener('click', function () { fetchSessions(true); });
 $('followRow').addEventListener('click', function () { openSession(''); });
 $('introClose').addEventListener('click', function () {

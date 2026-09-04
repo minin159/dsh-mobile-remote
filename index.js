@@ -19,6 +19,7 @@
  *   exact  /mobile-remote/sessions  会话列表（阶段 2，GET ?token=）
  *   exact  /mobile-remote/switch    切换绑定会话（阶段 2，POST {token,sessionId}）
  *   exact  /mobile-remote/new       新建会话并钉住（优3b，POST {token}）
+ *   exact  /mobile-remote/drop      丢弃本插件所建空会话（C3，POST {token,sessionId}，双端校验）
  *   exact  /mobile-remote/model     模型目录（GET ?token=）与切换（POST {token,provider,model}，优2）
  *   exact  /mobile-remote/paircheck 配对状态探测（阶段 2，GET ?token=，供页面判失效原因）
  *   exact  /mobile-remote/qr.svg    配对二维码 SVG（优1，GET ?token=，桌面端会话内出码用）
@@ -63,6 +64,7 @@ const ROUTE_SHIELD = '/mobile-remote/shield';
 const ROUTE_QR = '/mobile-remote/qr.svg'; // 配对二维码 SVG（token 即门禁，优1 pair_qr 配套）
 const ROUTE_NEW = '/mobile-remote/new';   // 新建会话（优3b，P10 证实 sessionController.create）
 const ROUTE_MODEL = '/mobile-remote/model'; // 模型目录 + 切换（优2，P8 证实官方路径 selectModel）
+const ROUTE_DROP = '/mobile-remote/drop';   // 丢弃空会话（C3：仅本插件 /new 所建且零输入的会话）
 const ROUTE_PREFIX = '/mobile-remote/';
 
 // 盾牌（阶段 5）：访问权限三档，会话级临时状态（仅存内存，重启/停止远程回到 'ask'）。
@@ -406,6 +408,12 @@ export function apply(ctx, config) {
   const ring = new Map();            // sid → [{ seq, frame }] 断线补发缓冲
   const pendings = new Map();        // 审批 id → { settle, fallback, toolName, startedAt }
   let disconnectGraceTimer = null;   // 手机断开后的审批回落宽限定时器
+  // ── 空会话不存档（C3 feat(new-session)）──────────────────────────────
+  // 本插件 /new 创建的会话记账（sid → createdAt）。仅这份名单内的会话才允许被
+  // /drop 丢弃——用户在电脑端建的会话绝不在列，这是服务端校验的第一道闸。
+  // 有界：超过 32 条按最旧淘汰（丢弃决策只在创建后短期内有效，久远记录无意义）。
+  const newCreatedSids = new Map();
+  let newCreatedSeq = 0;
 
   function touchActivity(sid, patch) {
     if (!sid) return;
@@ -1763,6 +1771,12 @@ export function apply(ctx, config) {
           }
           pinnedSid = sid; // 新会话立即钉住（决策 13）：跨重连保持，不被自动挑选顶掉
           bindSession({ sid, cwd });
+          // C3 空会话不存档：记账「本插件所建」，/drop 校验的第一道依据
+          newCreatedSids.set(sid, Date.now());
+          if (newCreatedSids.size > 32) {
+            const oldest = newCreatedSids.keys().next().value;
+            if (oldest !== undefined) newCreatedSids.delete(oldest);
+          }
           // 通知页面（switched=true → 页面清空消息流）；新会话暂无历史帧，游标归零即可
           sendFrame('bound', { sessionId: boundSid, cwd: boundCwd, switched: true, live: true });
           const conn = activeConn;
@@ -1770,6 +1784,88 @@ export function apply(ctx, config) {
           console.log(PLUGIN_TAG, '新建会话', sid + (cwd ? ' cwd=' + cwd : ''));
           audit('session_new', { from: fromSid, sid, cwd });
           sendJson(res, 200, { ok: true, sessionId: sid, cwd, live: true });
+        },
+      });
+
+      // 6d) 丢弃空会话（C3 feat(new-session)）：/new 建了会话但用户从未发消息就
+      //     离开/切换/断开——自动 drop，不留下空壳。双重校验防误删：
+      //     ① sid 必须在 newCreatedSids 记账内（本插件 /new 所建，绝不动电脑端建的会话）；
+      //     ② 事件缓冲里从未出现过 user/message（零输入）。
+      //     页面端为第一道（只对零消息的 newCreatedSid 发起），此处服务端复核。
+      //     drop 失败静默（会话残留无害）；成功后如果删除的是当前绑定/钉住会话则解除。
+      reg({
+        kind: 'exact',
+        path: ROUTE_DROP,
+        handler: async (req, res) => {
+          if (req.method !== 'POST') {
+            sendJson(res, 405, { ok: false, code: 'method-not-allowed', message: 'POST only' });
+            return;
+          }
+          if (!st().enabled) {
+            sendJson(res, 404, { ok: false, code: 'disabled', message: '远程控制未开启' });
+            return;
+          }
+          let parsed;
+          try {
+            parsed = await readJson(req, 4 * 1024);
+          } catch (error) {
+            sendJson(res, 400, { ok: false, code: 'invalid-request', message: msgOf(error) });
+            return;
+          }
+          const dropReject = tokenRejectReason(String(parsed.token || ''));
+          if (dropReject) {
+            sendJson(res, 401, {
+              ok: false,
+              code: dropReject,
+              message: dropReject === 'token-expired' ? '配对已过期，请在电脑端重新生成' : '配对码无效',
+            });
+            return;
+          }
+          const sid = typeof parsed.sessionId === 'string' ? parsed.sessionId.trim() : '';
+          if (!sid) {
+            sendJson(res, 400, { ok: false, code: 'bad-session', message: '缺少会话标识' });
+            return;
+          }
+          // 校验①：本插件 /new 所建（服务端记账为准，页面声明不可信）
+          if (!newCreatedSids.has(sid)) {
+            sendJson(res, 409, { ok: false, code: 'not-plugin-created', message: '仅允许丢弃本插件新建的空会话' });
+            return;
+          }
+          // 校验②：该会话从未有过 user/message 事件（零输入）——缓冲不含任何
+          // 用户消息即视为零输入；缓冲有内容说明回合发生过，一律不 drop。
+          const buffered = ringFor(sid);
+          const hasUserMsg = buffered.some((it) => {
+            try {
+              const payload = JSON.parse(String(it.frame).split('data: ')[1]);
+              return payload && payload.type === 'user/message';
+            } catch { return false; }
+          });
+          if (hasUserMsg) {
+            sendJson(res, 409, { ok: false, code: 'session-active', message: '会话已有消息，不丢弃' });
+            return;
+          }
+          try {
+            const sc = ctx.get('sessionController');
+            if (!sc || typeof sc.drop !== 'function') {
+              sendJson(res, 501, { ok: false, code: 'drop-unavailable', message: '当前 DSH 实例不支持丢弃会话' });
+              return;
+            }
+            await sc.drop(sid);
+          } catch (error) {
+            // drop 失败静默语义：对页面返回 ok（残留无害），日志与审计记录失败原因
+            console.warn(PLUGIN_TAG, '空会话 drop 失败（残留无害）:', msgOf(error));
+            audit('session_drop', { sid, ok: false, err: clip(msgOf(error), 120) });
+            sendJson(res, 200, { ok: true, dropped: false });
+            return;
+          }
+          newCreatedSids.delete(sid);
+          // 删的是当前绑定/钉住的会话：解除绑定回到跟随（会话已不存在）
+          if (boundSid === sid) { boundSid = null; boundCwd = ''; }
+          if (pinnedSid === sid) pinnedSid = null;
+          ring.delete(sid);
+          audit('session_drop', { sid, ok: true });
+          console.log(PLUGIN_TAG, '空会话已丢弃', sid);
+          sendJson(res, 200, { ok: true, dropped: true });
         },
       });
 
