@@ -126,6 +126,7 @@ const PRE_IDS = new Set([
   'modelBtn', 'shieldSheet', 'shieldCancel', 'optAsk', 'optAllowAll', 'optDenyAll',
   'modelSheet', 'modelMask', 'modelList', 'segWs', 'segTime', 'newBtn', 'stoppedBanner',
   'resumeBtn', 'replacedBanner', 'takeoverBtn', 'pairRetryBtn', 'connLostBanner',
+  'delMask', 'delSheet', 'delTitle', 'delSub', 'delConfirm', 'delCancel', // C3 feat(delete)
 ]);
 const storage = () => {
   const m = new Map();
