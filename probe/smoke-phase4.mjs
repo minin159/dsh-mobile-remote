@@ -555,26 +555,38 @@ check('E2 事件后 lastAt 更新（仅活跃会话）', a && a.lastAt > 0 && b2
   const jn = JSON.parse(resN.body);
   check('E4 /new 创建并返回会话', resN.statusCode === 200 && jn.ok === true && jn.sessionId === 'session-new-1' && jn.live === true,
     resN.statusCode + ' ' + resN.body);
-  check('E4b 无绑定 cwd 时默认 D:\\', calls.length === 1 && calls[0] !== undefined && calls[0].cwd === 'D:\\',
+  check('E4b 无绑定 cwd 时默认 D:\\dsh-sessions', calls.length === 1 && calls[0] !== undefined && calls[0].cwd === 'D:\\dsh-sessions',
     JSON.stringify(calls));
   const resS = mockRes();
   await E.routes.get('/mobile-remote/sessions')(mockReq('/mobile-remote/sessions?token=testtoken123'), resS);
   const js = JSON.parse(resS.body);
   check('E4c canNew=true 且 pinned=新会话', js.canNew === true && js.pinnedSession === 'session-new-1',
     JSON.stringify({ canNew: js.canNew, pinned: js.pinnedSession }));
-  // E5 优3b（C1 修正）：新建默认落 D 盘（NEW_SESSION_CWD），不再沿用当前绑定会话目录；
-  //    请求体显式带 cwd 时以请求为准（预留官方参数面）
+  // E5 优3b（C2 修正）：新建默认落 D:\dsh-sessions（盘符根会 EPERM——DSH create 要在
+  //    cwd 下 mkdir，Windows 拒绝盘符根）；请求体显式带 cwd 时以请求为准（预留官方参数面）
   const resSw = mockRes();
   await E.routes.get('/mobile-remote/switch')(mockReq('/mobile-remote/switch', 'POST', { token: 'testtoken123', sessionId: 'session-e4a' }), resSw);
   const resN2 = mockRes();
   await E.routes.get('/mobile-remote/new')(mockReq('/mobile-remote/new', 'POST', { token: 'testtoken123' }), resN2);
-  check('E5 新建默认落 D:\\（不沿用绑定会话 cwd）', resN2.statusCode === 200 && JSON.parse(resN2.body).sessionId === 'session-new-1'
-    && calls[1] !== undefined && calls[1].cwd === 'D:\\',
+  check('E5 新建默认落 D:\\dsh-sessions（不沿用绑定会话 cwd）', resN2.statusCode === 200 && JSON.parse(resN2.body).sessionId === 'session-new-1'
+    && calls[1] !== undefined && calls[1].cwd === 'D:\\dsh-sessions',
     JSON.stringify(calls[1]) + ' sw=' + resSw.statusCode);
   const resN3 = mockRes();
   await E.routes.get('/mobile-remote/new')(mockReq('/mobile-remote/new', 'POST', { token: 'testtoken123', cwd: 'D:/work/explicit' }), resN3);
   check('E5b 请求体显式 cwd 以请求为准', resN3.statusCode === 200 && calls[2] !== undefined && calls[2].cwd === 'D:/work/explicit',
     JSON.stringify(calls[2]));
+  // E7 C2 fix：create 抛错 → 502 且报错信息带目标目录路径（真机 EPERM 便于定位）
+  {
+    const callsErr = [];
+    world.sessionController = { create: async (req) => { callsErr.push(req); throw new Error('EPERM mkdir \'D:\\dsh-sessions\''); } };
+    const resN4 = mockRes();
+    await E.routes.get('/mobile-remote/new')(mockReq('/mobile-remote/new', 'POST', { token: 'testtoken123' }), resN4);
+    const je = JSON.parse(resN4.body);
+    check('E7 create 失败 502 且报错带目标目录', resN4.statusCode === 502 && je.ok === false && je.code === 'create-failed'
+      && je.message.includes('D:\\dsh-sessions') && je.cwd === 'D:\\dsh-sessions',
+      resN4.statusCode + ' ' + resN4.body);
+    world.sessionController = { create: async (req) => { calls.push(req); return { sessionId: 'session-new-1' }; } };
+  }
 }
 
 // E6 历史回读（C1 feat(history)）：readSession → history 帧（SSE 建连/切换触发）

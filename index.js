@@ -84,9 +84,12 @@ const DEFAULTS = {
   auditEnabled: true,   // 审计 JSONL（~/.dsh/mobile-remote-audit.jsonl）：只记元数据不记正文
 };
 
-/** 优3b 修正：/new 新建会话的默认工作区（C1 真机反馈：原先沿用当前绑定会话目录，
- *  用户期望统一落 D 盘；本轮不做设置页配置项，按常量收口）。 */
-const NEW_SESSION_CWD = 'D:\\';
+/** 优3b 修正（C2 真机反馈）：/new 新建会话的默认工作目录。
+ *  C1 曾用 'D:\'（盘符根）——真机 EPERM：DSH create 要在 cwd 下 ensure project
+ *  directory（mkdir），对盘符根 Windows 直接拒绝。改为固定子目录 D:\dsh-sessions
+ *  （enabled 时自动建一次，见 ensureNewSessionDir）；不做设置页配置项，按常量收口。 */
+const NEW_SESSION_CWD = 'D:\\dsh-sessions';
+let newSessionDirReady = false; // 已成功创建/确认存在 → 不重复 mkdir
 /** 历史回读拉取上限（C1 feat(history)）：进入会话时从 readSession 拉最近 30 条。 */
 const HISTORY_PULL_MAX = 30;
 /** 缓冲低于该帧数才触发历史回读（缓冲已覆盖近期窗口就不重复拉）。 */
@@ -369,6 +372,20 @@ export function apply(ctx, config) {
     const s = st();
     if (s.enabled && !relayServer && clampInt(s.relayPort, 0, 65535, DEFAULTS.relayPort)) startRelay();
     if (!s.enabled && relayServer) stopRelay();
+  }
+
+  /** 新建会话目录守卫（C2 fix）：enabled 变 true 时把 NEW_SESSION_CWD 建一次
+   *  （recursive，已存在不报错）。失败只记日志不阻塞——mkdir 失败时 /new 仍由
+   *  DSH create 的报错链路兜底返回。成功过一次后不再重复调用。 */
+  async function ensureNewSessionDir() {
+    if (newSessionDirReady) return;
+    try {
+      await mkdir(NEW_SESSION_CWD, { recursive: true });
+      newSessionDirReady = true;
+    } catch (error) {
+      console.error(PLUGIN_TAG, '新建会话目录创建失败（不阻塞，/new 时按需重试）:',
+        NEW_SESSION_CWD, msgOf(error));
+    }
   }
 
   // ── 进程内运行状态 ───────────────────────────────────────────────────────
@@ -998,6 +1015,10 @@ export function apply(ctx, config) {
     try { stopRemote('插件卸载'); } catch {}
   }, 'mobile-remote: teardown');
 
+  // 进程启动即可能带 enabled=true（重载/DSH 重启后配置持久化）：同步预建
+  // 新建会话目录（C2 fix；异步完成即可，/new 路径上还有一次兜底）。
+  if (st().enabled) void ensureNewSessionDir();
+
   // ── HTTP 帮助函数 ────────────────────────────────────────────────────────
   function sendJson(res, status, value) {
     res.statusCode = status;
@@ -1346,7 +1367,10 @@ export function apply(ctx, config) {
             sendJson(res, 409, { ok: false, code: 'settings-rejected', message: msgOf(error) });
             return;
           }
-          if (patch.enabled === true) await ensureToken();
+          if (patch.enabled === true) {
+            await ensureToken();
+            void ensureNewSessionDir(); // C2：启用即备好 D:\dsh-sessions（失败只记日志）
+          }
           ensureRelay(); // 中继跟随 enabled 热启停；端口变更同样在此生效
           if (stopRequested) stopRemote(parsed.resetToken ? '配对码重置' : '电脑端请求停止');
           if (patch.token !== undefined) audit('token_reset', {});
@@ -1712,17 +1736,25 @@ export function apply(ctx, config) {
           }
           const fromSid = boundSid; // 审计用
           const cwd = typeof parsed.cwd === 'string' && parsed.cwd.trim() ? parsed.cwd.trim() : NEW_SESSION_CWD;
+          // C2 fix：目录缺失会导致 DSH create 在 ensure project directory 一步 EPERM，
+          // 这里再兜一次（已存在则 recursive mkdir 无操作）；失败交由下方 create 报错链路透出。
+          await ensureNewSessionDir();
           let created;
           try {
             created = await sc.create({ cwd });
           } catch (error) {
             console.error(PLUGIN_TAG, '新建会话失败:', msgOf(error));
-            sendJson(res, 502, { ok: false, code: 'create-failed', message: '创建会话失败：' + msgOf(error) });
+            sendJson(res, 502, {
+              ok: false,
+              code: 'create-failed',
+              message: '创建会话失败：' + msgOf(error) + '（目标目录 ' + cwd + '）',
+              cwd,
+            });
             return;
           }
           const sid = String(created?.sessionId || '');
           if (!sid) {
-            sendJson(res, 502, { ok: false, code: 'create-failed', message: '创建会话未返回会话标识' });
+            sendJson(res, 502, { ok: false, code: 'create-failed', message: '创建会话未返回会话标识（目标目录 ' + cwd + '）', cwd });
             return;
           }
           pinnedSid = sid; // 新会话立即钉住（决策 13）：跨重连保持，不被自动挑选顶掉
