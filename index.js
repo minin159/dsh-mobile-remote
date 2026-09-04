@@ -20,7 +20,7 @@
  *   exact  /mobile-remote/switch    切换绑定会话（阶段 2，POST {token,sessionId}）
  *   exact  /mobile-remote/new       新建会话并钉住（优3b，POST {token}）
  *   exact  /mobile-remote/drop      丢弃本插件所建空会话（C3，POST {token,sessionId}，双端校验）
- *   exact  /mobile-remote/delete    删除历史会话（C3，POST {token,sid}；live 运行中禁删）
+ *   exact  /mobile-remote/delete    （已移除——宿主侧无公开删除 API）
  *   exact  /mobile-remote/model     模型目录（GET ?token=）与切换（POST {token,provider,model}，优2）
  *   exact  /mobile-remote/paircheck 配对状态探测（阶段 2，GET ?token=，供页面判失效原因）
  *   exact  /mobile-remote/qr.svg    配对二维码 SVG（优1，GET ?token=，桌面端会话内出码用）
@@ -66,7 +66,7 @@ const ROUTE_QR = '/mobile-remote/qr.svg'; // 配对二维码 SVG（token 即门�
 const ROUTE_NEW = '/mobile-remote/new';   // 新建会话（优3b，P10 证实 sessionController.create）
 const ROUTE_MODEL = '/mobile-remote/model'; // 模型目录 + 切换（优2，P8 证实官方路径 selectModel）
 const ROUTE_DROP = '/mobile-remote/drop';   // 丢弃空会话（C3：仅本插件 /new 所建且零输入的会话）
-const ROUTE_DELETE = '/mobile-remote/delete'; // 删除历史会话（C3：persisted 且非当前绑定；live 运行中禁删）
+// （ROUTE_DELETE /mobile-remote/delete 已随删除功能移除——宿主侧无公开删除 API）
 const ROUTE_PREFIX = '/mobile-remote/';
 
 // 盾牌（阶段 5）：访问权限三档，会话级临时状态（仅存内存，重启/停止远程回到 'ask'）。
@@ -1871,94 +1871,9 @@ export function apply(ctx, config) {
         },
       });
 
-      // 6e) 删除历史会话（C3 feat(delete)）：手机端长按会话行 → 二次确认弹窗 →
-      //     POST 本路由 → sessionController.drop(sid)（live 注册表删除 + drain 清理，
-      //     已结束会话的持久化记录随之出列表）。守卫三道：
-      //     ① 目标必须是 persisted 历史会话（listSessions 复核）且非当前绑定（boundSid）；
-      //     ② live 会话（仍在运行）一律 409 session-live 禁删——运行中的会话不能拆；
-      //     ③ 服务端复核存在性（页面数据可能过期）。审计记 session_delete（含 sid，不含内容）。
-      reg({
-        kind: 'exact',
-        path: ROUTE_DELETE,
-        handler: async (req, res) => {
-          if (req.method !== 'POST') {
-            sendJson(res, 405, { ok: false, code: 'method-not-allowed', message: 'POST only' });
-            return;
-          }
-          if (!st().enabled) {
-            sendJson(res, 404, { ok: false, code: 'disabled', message: '远程控制未开启' });
-            return;
-          }
-          let parsed;
-          try {
-            parsed = await readJson(req, 2 * 1024);
-          } catch (error) {
-            sendJson(res, 400, { ok: false, code: 'invalid-request', message: msgOf(error) });
-            return;
-          }
-          const delReject = tokenRejectReason(String(parsed.token || ''));
-          if (delReject) {
-            sendJson(res, 401, {
-              ok: false,
-              code: delReject,
-              message: delReject === 'token-expired' ? '配对已过期，请在电脑端重新生成' : '配对码无效',
-            });
-            return;
-          }
-          const sid = typeof parsed.sessionId === 'string' ? parsed.sessionId.trim() : '';
-          if (!sid) {
-            sendJson(res, 400, { ok: false, code: 'bad-session', message: '缺少会话标识' });
-            return;
-          }
-          // ①+③：服务端复核目标形态（sessionQuery 全量视图为准）
-          let target = null;
-          try {
-            const q = ctx.get('sessionQuery');
-            if (q && typeof q.listSessions === 'function') {
-              const all = await q.listSessions();
-              for (const rec of Array.isArray(all) ? all : []) {
-                if (String(rec?.header?.id) === sid) { target = rec; break; }
-              }
-            }
-          } catch {}
-          if (!target) {
-            sendJson(res, 404, { ok: false, code: 'session-not-found', message: '会话不存在或已清理' });
-            return;
-          }
-          // ②：live 运行中的会话禁删（按钮置灰的第一道，服务端兜底）
-          if (target.live === true) {
-            sendJson(res, 409, { ok: false, code: 'session-live', message: '运行中的会话不能删除，请先结束或切换' });
-            return;
-          }
-          // ①：非 persisted（既不在运行也无持久化记录）不属于删除目标
-          if (target.persisted !== true) {
-            sendJson(res, 409, { ok: false, code: 'not-persisted', message: '仅可删除有历史记录的会话' });
-            return;
-          }
-          // ①：当前绑定会话禁删（删除绑定会话会造成手机流悬空）
-          if (sid === boundSid) {
-            sendJson(res, 409, { ok: false, code: 'session-bound', message: '当前绑定的会话不能删除，请先切换' });
-            return;
-          }
-          try {
-            const sc = ctx.get('sessionController');
-            if (!sc || typeof sc.drop !== 'function') {
-              sendJson(res, 501, { ok: false, code: 'delete-unavailable', message: '当前 DSH 实例不支持删除会话' });
-              return;
-            }
-            await sc.drop(sid);
-          } catch (error) {
-            audit('session_delete', { sid, ok: false, err: clip(msgOf(error), 120) });
-            sendJson(res, 502, { ok: false, code: 'delete-failed', message: '删除失败：' + msgOf(error) });
-            return;
-          }
-          newCreatedSids.delete(sid); // 若恰好是记账过的空会话（防御），一并出账
-          ring.delete(sid);
-          audit('session_delete', { sid, ok: true }); // 只记 sid，不记内容
-          console.log(PLUGIN_TAG, '会话已删除', sid);
-          sendJson(res, 200, { ok: true, deleted: true });
-        },
-      });
+      // （C3 删除历史会话路由已按用户指示移除——宿主侧 sessionController 无公开删除
+      //   API，drop 仅存在于客户端类；官方 web UI 亦无删除功能。历史会话的清理走
+      //   磁盘层手工/回收站方案，见 docs/optimization-tasks.md C3 段记录。）
 
       // 6c) 模型目录 + 切换（优2）：目录来自官方 llm 服务（listProviders/listModels），
       //     切换只走官方 sessionController.selectModel（P8 证实路径；自实现改写实测未落地，禁止）。

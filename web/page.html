@@ -403,30 +403,7 @@
   .modelOpt .moName { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .modelOpt .moCheck { flex-shrink: 0; color: var(--ink); font-weight: 700; }
   .modelOpt.cur { box-shadow: inset 0 0 0 2px var(--ink); }
-  /* ── C3 feat(delete)：删除会话确认弹窗（同模型弹窗形态：居中小窗 + 半透明遮罩）── */
-  #delMask {
-    display: none; position: fixed; inset: 0; z-index: 48;
-    background: rgba(0, 0, 0, .55);
-    -webkit-backdrop-filter: saturate(180%) blur(16px); backdrop-filter: saturate(180%) blur(16px);
-  }
-  #delMask.show { display: block; }
-  #delSheet {
-    display: none; position: fixed; z-index: 49;
-    left: 50%; top: 50%; transform: translate(-50%, -50%);
-    width: min(320px, 86vw);
-    background: var(--panel); border-radius: 14px; padding: 14px;
-    box-shadow: var(--shadow);
-  }
-  #delSheet.show { display: block; }
-  #delSheet h3 { margin: 0 0 6px; font-size: 12.5px; color: var(--muted); font-weight: 600; }
-  #delTitle { font-size: 14px; font-weight: 600; color: var(--ink);
-    margin-bottom: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  #delSub { font-size: 12px; color: var(--muted); margin-bottom: 12px; line-height: 1.55; }
-  #delBtns { display: flex; gap: 10px; }
-  #delBtns button { flex: 1; border: 0; border-radius: 12px; height: 44px; font-size: 14px; font-weight: 600; }
-  #delCancel { background: var(--panel2); color: var(--ink); }
-  #delConfirm { background: var(--bad); color: #fff; }
-  #delConfirm:disabled { opacity: .45; }
+  /* （C3 删除会话弹窗样式已随功能移除——宿主侧无公开删除 API，方案废弃） */
   #hintBar { text-align: center; font-size: 13px; color: var(--muted); padding: 24px; line-height: 1.7; }
   /* 轻提示：毛玻璃胶囊 */
   #toast {
@@ -522,20 +499,6 @@
     <div id="modelCur">读取中…</div>
     <div id="modelNote">对绑定会话下一回合生效（不打断进行中的回合）；官方机制会同时把它设为电脑端默认模型。</div>
     <div id="modelList"></div>
-  </div>
-</div>
-
-<!-- 删除会话确认弹窗（C3 feat(delete)）：同模型弹窗形态（居中小窗 + 遮罩点击关闭）。
-     仅 persisted 且非当前绑定的会话可删；live 运行中的会话置灰禁删。 -->
-<div id="delMask">
-  <div id="delSheet">
-    <h3>删除会话</h3>
-    <div id="delTitle">—</div>
-    <div id="delSub">删除后将从列表移除，且不可恢复。</div>
-    <div id="delBtns">
-      <button id="delCancel">取消</button>
-      <button id="delConfirm">删除</button>
-    </div>
   </div>
 </div>
 
@@ -1819,113 +1782,11 @@ function buildTaskRow(it) {
   row.appendChild(main);
   row.appendChild(chip);
   row.addEventListener('click', function () { openSession(it.id); });
-  // C3 feat(delete)：长按任务行 → 删除确认弹窗（长按比滑动实现简单可靠，
-  // Android WebView 的 touch 事件在手势滚动冲突下表现不稳定）。
-  // 可删条件（页面第一道）：persisted 且非当前绑定；live 运行中 → 置灰提示。
-  // 触屏长按（500ms 定时器；移动 >10px 或松手即取消——不与滚动/点击冲突；
-  // 触发后抑制本次后续 click，防止弹窗刚开又被 openSession 顶走）。
-  // contextmenu 保留给鼠标右键（桌面调试）——Android WebView 上它不可靠。
-  (function () {
-    var timer = null, sx = 0, sy = 0, fired = false;
-    function clear() { if (timer) { clearTimeout(timer); timer = null; } }
-    row.addEventListener('touchstart', function (e) {
-      if (!e.touches || !e.touches.length) return;
-      fired = false;
-      sx = e.touches[0].clientX; sy = e.touches[0].clientY;
-      clear();
-      timer = setTimeout(function () {
-        timer = null; fired = true;
-        if (navigator.vibrate) { try { navigator.vibrate(15); } catch (err) {} }
-        askDeleteSession(it);
-      }, 500);
-    }, { passive: true });
-    row.addEventListener('touchmove', function (e) {
-      if (!timer || !e.touches || !e.touches.length) return;
-      var dx = e.touches[0].clientX - sx, dy = e.touches[0].clientY - sy;
-      if (dx * dx + dy * dy > 100) clear(); // 滚动/滑动意图：取消长按
-    }, { passive: true });
-    row.addEventListener('touchend', function (e) {
-      clear();
-      if (fired && e && e.preventDefault) e.preventDefault(); // 抑制长按后的 click
-    });
-    row.addEventListener('touchcancel', clear);
-  })();
-  row.addEventListener('contextmenu', function (e) {
-    if (e && e.preventDefault) e.preventDefault();
-    askDeleteSession(it);
-  });
+  // （C3 删除会话功能已按用户指示移除——宿主侧无公开删除 API，长按/contextmenu 一并撤下）
   state.rowChips[it.id] = chip; // SSE 状态帧增量更新用
   state.rowRows[it.id] = row;   // 绑定高亮增量更新用
   return row;
 }
-// ── 删除会话（C3 feat(delete)）──────────────────────────────────────────
-// 长按任务行 → 居中确认弹窗（同模型弹窗形态）→ POST /mobile-remote/delete
-// → sessionController.drop。仅 persisted 且非当前绑定的会话可删；live 运行中
-// 置灰禁删 + toast 提示。删除成功后列表即时移除（本地剔除 + fetchSessions 校准）
-// + toast 确认。服务端三道守卫兜底（live 禁删/非 persisted 禁删/绑定禁删）。
-var delTarget = null; // 待删除会话条目（弹窗期间持有）
-/** 可删性（页面第一道）：persisted 且非当前绑定且非 live 运行中。 */
-function canDeleteSession(it) {
-  return !!(it && it.id && it.id !== state.sessionId
-    && it.persisted === true && it.live !== true);
-}
-function askDeleteSession(it) {
-  if (!it || !it.id) return;
-  delTarget = it;
-  $('delTitle').textContent = sessionTitle(it);
-  if (canDeleteSession(it)) {
-    $('delConfirm').disabled = false;
-    $('delSub').textContent = '删除后将从列表移除，且不可恢复。';
-  } else if (it.id === state.sessionId) {
-    // 当前绑定会话：弹窗内直接置灰 + 提示（按钮置灰形态，非静默 toast）
-    $('delConfirm').disabled = true;
-    $('delSub').textContent = '当前绑定的会话不能删除，请先切换到其他会话。';
-  } else if (it.live === true) {
-    $('delConfirm').disabled = true;
-    $('delSub').textContent = '运行中的会话不能删除，请等回合结束后再试。';
-  } else {
-    $('delConfirm').disabled = true;
-    $('delSub').textContent = '该会话没有可删除的历史记录。';
-  }
-  $('delMask').classList.add('show');
-  $('delSheet').classList.add('show');
-}
-function closeDeleteSheet() {
-  $('delMask').classList.remove('show');
-  $('delSheet').classList.remove('show');
-  delTarget = null;
-}
-$('delMask').addEventListener('click', function (e) {
-  if (e && e.target === $('delMask')) closeDeleteSheet(); // 遮罩点击关闭（弹窗本体阻止冒泡）
-});
-$('delSheet').addEventListener('click', function (e) {
-  if (e && e.stopPropagation) e.stopPropagation();
-});
-$('delCancel').addEventListener('click', closeDeleteSheet);
-$('delConfirm').addEventListener('click', function () {
-  var it = delTarget;
-  if (!it || $('delConfirm').disabled) return; // 置灰守卫（live/绑定态）
-  $('delConfirm').disabled = true;
-  postJSON('/mobile-remote/delete', { token: token, sessionId: it.id })
-    .then(function (r) {
-      closeDeleteSheet();
-      if (handleAuthCode(r && r.code)) return;
-      if (r && r.ok) {
-        delete state.sessionsById[it.id]; // 列表即时移除（本地先剔，fetch 校准）
-        state.homeDirty = true;
-        if (state.view === 'home') renderHome();
-        fetchSessions(true);
-        toast('已删除会话');
-      } else {
-        toast('删除失败：' + ((r && r.message) || '未知错误'));
-        fetchSessions(true); // 失败原因多为数据过期（live 态变化），刷新列表校准
-      }
-    })
-    .catch(function () {
-      closeDeleteSheet();
-      toast('网络错误');
-    });
-});
 /** SSE 状态帧 → 首页对应任务行胶囊增量更新（无需整表重建）。 */
 function updateHomeRowStatus(sid, st) {
   if (!sid || !st) return;

@@ -197,74 +197,15 @@ res = mockRes();
 await A.routes.get('/mobile-remote/drop')(mockReq('/mobile-remote/drop', 'POST', { token: 'testtoken123' }), res);
 check('A7b /drop 缺 sid 400', res.statusCode === 400 && jsonOf(res)?.code === 'bad-session');
 
-// ── B 组：删除确认 + 守卫矩阵（feat(delete)）────────────────────────────
-// B1 页面含长按删除入口 + 居中确认弹窗 + 删除键（置灰守卫）
-check('B1 页面含长按删除入口与确认弹窗',
-  page.includes("addEventListener('contextmenu'") && page.includes('id="delSheet"')
-  && page.includes('id="delConfirm"') && page.includes("'/mobile-remote/delete'"));
+// ── B 组：删除功能已按用户指示移除（宿主侧无公开删除 API）────────────────
+check('B1 /delete 路由已移除（未注册）',
+  !A.routes.get('/mobile-remote/delete'), 'route still registered');
+check('B2 页面已无删除 UI（delSheet/delConfirm/askDeleteSession 均不存在）',
+  !page.includes('id="delSheet"') && !page.includes('id="delConfirm"')
+  && !page.includes("'/mobile-remote/delete'") && !page.includes('askDeleteSession'),
+  'delete UI remnants in page');
 
-// B2 正常删除：persisted 且非绑定 → 200 + drop 调用 + 审计
-res = mockRes();
-await A.routes.get('/mobile-remote/delete')(mockReq('/mobile-remote/delete', 'POST', { token: 'testtoken123', sessionId: 'session-hist-1' }), res);
-check('B2 删除历史会话成功（drop 调用 + 200）',
-  res.statusCode === 200 && jsonOf(res)?.ok === true && jsonOf(res)?.deleted === true
-  && world.dropped.includes('session-hist-1'),
-  res.statusCode + ' ' + res.body());
-
-// B3 live 运行中 → 409 禁删
-res = mockRes();
-await A.routes.get('/mobile-remote/delete')(mockReq('/mobile-remote/delete', 'POST', { token: 'testtoken123', sessionId: 'session-live-1' }), res);
-check('B3 live 运行中禁删（409 session-live）',
-  res.statusCode === 409 && jsonOf(res)?.code === 'session-live'
-  && !world.dropped.includes('session-live-1'),
-  res.statusCode + ' ' + res.body());
-
-// B4 非 persisted → 409 禁删
-res = mockRes();
-await A.routes.get('/mobile-remote/delete')(mockReq('/mobile-remote/delete', 'POST', { token: 'testtoken123', sessionId: 'session-ghost-1' }), res);
-check('B4 非 persisted 禁删（409 not-persisted）',
-  res.statusCode === 409 && jsonOf(res)?.code === 'not-persisted',
-  res.statusCode + ' ' + res.body());
-
-// B5 当前绑定会话 → 409 禁删（切到 bound-1 使其成为绑定，再尝试删）
-res = mockRes();
-await A.routes.get('/mobile-remote/switch')(mockReq('/mobile-remote/switch', 'POST', { token: 'testtoken123', sessionId: 'session-bound-1' }), res);
-check('B5a 切换绑定成功（前置）', res.statusCode === 200, res.statusCode + ' ' + res.body());
-res = mockRes();
-await A.routes.get('/mobile-remote/delete')(mockReq('/mobile-remote/delete', 'POST', { token: 'testtoken123', sessionId: 'session-bound-1' }), res);
-check('B5 当前绑定禁删（409 session-bound）',
-  res.statusCode === 409 && jsonOf(res)?.code === 'session-bound'
-  && !world.dropped.includes('session-bound-1'),
-  res.statusCode + ' ' + res.body());
-
-// B6 不存在的会话 → 404
-res = mockRes();
-await A.routes.get('/mobile-remote/delete')(mockReq('/mobile-remote/delete', 'POST', { token: 'testtoken123', sessionId: 'session-none' }), res);
-check('B6 会话不存在 404', res.statusCode === 404 && jsonOf(res)?.code === 'session-not-found',
-  res.statusCode + ' ' + res.body());
-
-// B7 宿主无 sessionController → 501 如实报错（不静默）
-const savedSc = world.sessionController;
-world.sessionController = null;
-res = mockRes();
-await A.routes.get('/mobile-remote/delete')(mockReq('/mobile-remote/delete', 'POST', { token: 'testtoken123', sessionId: 'session-hist-1' }), res);
-check('B7 宿主无 drop 能力 501（delete-unavailable）',
-  res.statusCode === 501 && jsonOf(res)?.code === 'delete-unavailable',
-  res.statusCode + ' ' + res.body());
-world.sessionController = savedSc;
-
-// B8 删除审计：session_delete 只含 sid 不含内容
-await new Promise((r) => setTimeout(r, 250));
-const auditPath = join(process.env.USERPROFILE, '.dsh', 'mobile-remote-audit.jsonl');
-const auditLines = existsSync(auditPath) ? readFileSync(auditPath, 'utf8').trim().split('\n') : [];
-const auditObjs = auditLines.map((l) => { try { return JSON.parse(l); } catch { return {}; } });
-const dels = auditObjs.filter((o) => o.act === 'session_delete');
-check('B8 审计记 session_delete（含 sid、不含内容）',
-  dels.some((o) => o.sid === 'session-hist-1' && o.ok === true)
-  && auditLines.every((l) => !l.includes('D:/work') && !l.includes('有输入了')),
-  JSON.stringify(dels));
-
-// ── C 组：live 会话禁删（页面端置灰 + 服务端兜底）────────────────────────
+// ── C 组：页面端 vm + mini DOM 基建（删除交互断言已随功能移除，空会话 drop 保留）——
 // 页面置灰逻辑在 vm 冒烟里覆盖（canDeleteSession/askDeleteSession 纯函数），
 // 服务端兜底已在 B3 断言。这里补页面侧：渲染 live 会话行 → 长按 → 弹窗删除键置灰。
 console.log('\n[C3-C] 页面端删除交互（vm + mini DOM）');
@@ -404,48 +345,6 @@ sandboxC.window.addEventListener = (t, f) => { (windowListeners[t] = windowListe
   const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
   vm.createContext(sandboxC);
   vm.runInContext(script, sandboxC, { filename: 'page.html' });
-}
-
-// C1 页面删除守卫纯函数：canDeleteSession 判据矩阵
-{
-  sandboxC.state.sessionId = 'session-bound-1';
-  check('C1 canDeleteSession 判据矩阵（persisted 非绑定非 live 才可删）',
-    sandboxC.canDeleteSession({ id: 'session-hist-1', persisted: true, live: false }) === true
-    && sandboxC.canDeleteSession({ id: 'session-live-1', persisted: true, live: true }) === false
-    && sandboxC.canDeleteSession({ id: 'session-bound-1', persisted: true, live: false }) === false
-    && sandboxC.canDeleteSession({ id: 'session-ghost-1', persisted: false, live: false }) === false);
-}
-// C2 live 会话长按 → 弹窗打开但删除键置灰
-{
-  sandboxC.askDeleteSession({ id: 'session-live-1', persisted: true, live: true, cwd: 'D:/work/live' });
-  check('C2 live 会话弹窗删除键置灰 + 提示文案',
-    byIdC.delSheet._classes.has('show') && byIdC.delConfirm.disabled === true
-    && /运行中/.test(byIdC.delSub.textContent),
-    'sub=' + byIdC.delSub.textContent);
-}
-// C3 置灰态点删除键 → 不发请求（fetch 零调用）
-{
-  (byIdC.delConfirm.listeners.click || []).forEach((fn) => fn());
-  check('C3 置灰守卫：点删除键不发请求', fetchCalls.every((c) => !String(c.path).includes('/delete')),
-    JSON.stringify(fetchCalls.map((c) => c.path)));
-}
-// C4 可删会话长按 → 弹窗可删 → 确认发 POST /delete {token,sid}
-{
-  fetchCalls.length = 0;
-  sandboxC.state.sessionsById['session-hist-1'] = { id: 'session-hist-1', cwd: 'D:/work/old' };
-  sandboxC.askDeleteSession({ id: 'session-hist-1', persisted: true, live: false, cwd: 'D:/work/old' });
-  (byIdC.delConfirm.listeners.click || []).forEach((fn) => fn());
-  const call = fetchCalls.find((c) => String(c.path).includes('/mobile-remote/delete'));
-  const body = call ? JSON.parse(call.opts.body) : null;
-  check('C4 确认删除发 POST /delete（token + sid）',
-    !!call && call.opts.method === 'POST' && body.token === 'testtoken123' && body.sessionId === 'session-hist-1',
-    JSON.stringify(fetchCalls.map((c) => c.path)));
-  await new Promise((r) => setTimeout(r, 20)); // 等 then 链执行（本地剔除 + 视图重建 + fetchSessions 校准）
-  // homeDirty 断言不适用：删除时处于 home 视图 → renderHome 即时重建（homeDirty 归 false 是正确行为）
-  check('C4b 删除后本地列表即时移除（sessionsById 剔除 + 弹窗复位）',
-    !sandboxC.state.sessionsById['session-hist-1'] && sandboxC.delTarget === null
-    && !byIdC.delSheet._classes.has('show'),
-    'sessionsById keys=' + Object.keys(sandboxC.state.sessionsById).join(','));
 }
 // C5 空会话不存档（页面端）：newCreatedSid 有值 + 零消息 → pagehide 发 /drop
 {
