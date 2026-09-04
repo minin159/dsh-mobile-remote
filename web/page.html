@@ -252,53 +252,59 @@
     -webkit-backdrop-filter: saturate(180%) blur(20px); backdrop-filter: saturate(180%) blur(20px);
   }
   body.view-chat #actionPill.show { display: block; }
-  /* ── 底部输入区（阶段 5：盾牌 + 上下文只读 + ↑发送；模型/思考键按探针结论隐藏）── */
+  /* ── 底部输入区（阶段 5：盾牌 + 上下文只读 + ↑发送；模型/思考键按探针结论隐藏）──
+     C3 底栏对齐 ZCode：浅色调毛玻璃（更透的面板 + backdrop blur 已有）、图标键
+     无底色透明化（去 panel2 圆底块感）、无边框描边、整体扁平；键视觉尺寸整体
+     缩小（44→36px）、间距收紧（8→6px）、图标 22→18px 更小更细。布局与键位不动。 */
   #composer {
-    display: flex; gap: 8px; align-items: flex-end;
-    padding: 8px 12px calc(10px + env(safe-area-inset-bottom));
-    border-top: 1px solid var(--line); background: var(--bar-bg); flex-shrink: 0;
-    -webkit-backdrop-filter: saturate(180%) blur(20px); backdrop-filter: saturate(180%) blur(20px);
+    display: flex; gap: 6px; align-items: flex-end;
+    padding: 7px 10px calc(9px + env(safe-area-inset-bottom));
+    border-top: 0; background: var(--bar-bg); flex-shrink: 0;
+    -webkit-backdrop-filter: saturate(180%) blur(24px); backdrop-filter: saturate(180%) blur(24px);
   }
   #input {
     flex: 1; resize: none; border: 0; border-radius: 18px;
-    background: var(--panel2); color: var(--ink); font: inherit; padding: 11px 14px;
+    background: var(--panel2); color: var(--ink); font: inherit; padding: 9px 13px;
     max-height: 120px; line-height: 1.4;
   }
   #input:focus { outline: none; }
-  /* 底栏扩展键位（盾牌/上下文）：与输入框同高的方形小按钮；盾牌/模型用 SF 风格细线条图标 */
+  /* 底栏扩展键位（盾牌/上下文）：无底色透明键（扁平，去圆底块感）——
+     按压反馈改用 opacity，不再换 panel2/press 底色 */
   .barBtn {
-    border: 0; border-radius: 12px; background: var(--panel2);
-    color: var(--ink); font-size: 16px; line-height: 1; padding: 0; flex-shrink: 0;
-    height: 44px; min-width: 44px; display: flex; align-items: center; justify-content: center;
+    border: 0; border-radius: 50%; background: transparent;
+    color: var(--ink); font-size: 15px; line-height: 1; padding: 0; flex-shrink: 0;
+    height: 36px; min-width: 36px; display: flex; align-items: center; justify-content: center;
   }
-  .barBtn:active { background: var(--press); }
-  #ctxBtn { font-size: 12.5px; font-weight: 600; color: var(--muted); min-width: 52px; padding: 0 8px; }
-  /* 盾牌/模型键图标：CSS mask 内联 SVG 细线条（不支持 mask 时回退原 emoji 字形） */
+  .barBtn:active { opacity: .45; }
+  #ctxBtn { font-size: 12px; font-weight: 600; color: var(--muted); min-width: 44px; padding: 0 6px; border-radius: 999px; }
+  /* 盾牌/模型键图标：CSS mask 内联 SVG 细线条（不支持 mask 时回退原 emoji 字形）；
+     C3 图标缩小 22→18px、stroke 1.5→1.25（更小更细，对齐 ZCode 底栏） */
   @supports ((-webkit-mask-image: url("x")) or (mask-image: url("x"))) {
     #shieldBtn, #modelBtn { font-size: 0; }
     #shieldBtn::before, #modelBtn::before {
-      content: ""; display: block; width: 22px; height: 22px; background: currentColor;
+      content: ""; display: block; width: 18px; height: 18px; background: currentColor;
       -webkit-mask-position: center; mask-position: center;
       -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat;
       -webkit-mask-size: contain; mask-size: contain;
     }
     #shieldBtn::before {
-      -webkit-mask-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'><path d='M12 3 19 5.8v5.3c0 4.4-2.9 8.3-7 9.9-4.1-1.6-7-5.5-7-9.9V5.8z'/></svg>");
-      mask-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'><path d='M12 3 19 5.8v5.3c0 4.4-2.9 8.3-7 9.9-4.1-1.6-7-5.5-7-9.9V5.8z'/></svg>");
+      -webkit-mask-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.25' stroke-linecap='round' stroke-linejoin='round'><path d='M12 3 19 5.8v5.3c0 4.4-2.9 8.3-7 9.9-4.1-1.6-7-5.5-7-9.9V5.8z'/></svg>");
+      mask-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.25' stroke-linecap='round' stroke-linejoin='round'><path d='M12 3 19 5.8v5.3c0 4.4-2.9 8.3-7 9.9-4.1-1.6-7-5.5-7-9.9V5.8z'/></svg>");
     }
     #modelBtn::before {
-      -webkit-mask-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'><path d='M12 3 20 7.4v9.2L12 21 4 16.6V7.4z'/><path d='M4 7.4 12 12l8-4.6M12 12v9'/></svg>");
-      mask-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'><path d='M12 3 20 7.4v9.2L12 21 4 16.6V7.4z'/><path d='M4 7.4 12 12l8-4.6M12 12v9'/></svg>");
+      -webkit-mask-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.25' stroke-linecap='round' stroke-linejoin='round'><path d='M12 3 20 7.4v9.2L12 21 4 16.6V7.4z'/><path d='M4 7.4 12 12l8-4.6M12 12v9'/></svg>");
+      mask-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.25' stroke-linecap='round' stroke-linejoin='round'><path d='M12 3 20 7.4v9.2L12 21 4 16.6V7.4z'/><path d='M4 7.4 12 12l8-4.6M12 12v9'/></svg>");
     }
   }
-  /* 盾牌档位着色：放行=红（危险），拒绝=灰（静默） */
-  #shieldBtn.allow { color: var(--bad); background: rgba(255,69,58,.16); }
-  #shieldBtn.deny { color: var(--muted); background: var(--press); }
+  /* 盾牌档位着色：放行=红（危险），拒绝=灰（静默）——透明底形态下改淡色底 */
+  #shieldBtn.allow { color: var(--bad); background: rgba(255,69,58,.14); }
+  #shieldBtn.deny { color: var(--muted); }
   #sendBtn {
-    border: 0; border-radius: 22px; background: var(--accent); color: var(--accent-ink);
-    font-size: 19px; font-weight: 600; padding: 0; flex-shrink: 0;
-    width: 44px; height: 44px; display: flex; align-items: center; justify-content: center;
+    border: 0; border-radius: 50%; background: var(--accent); color: var(--accent-ink);
+    font-size: 15px; font-weight: 600; padding: 0; flex-shrink: 0;
+    width: 36px; height: 36px; display: flex; align-items: center; justify-content: center;
   }
+  #sendBtn:active { opacity: .8; }
   #sendBtn:disabled { opacity: .4; }
   /* 盾牌「全部放行」红色警示条：会话视图内、输入栏上方，常驻 */
   #shieldBanner {
