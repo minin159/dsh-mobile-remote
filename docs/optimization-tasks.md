@@ -147,6 +147,58 @@
 
 ---
 
+# C3 · 五条新需求（基于 v1.7.1 + 堆叠版，目标 15–25 万，红线 25 万）
+
+> 来源：用户真机使用反馈（2026-09-05 截图对照 ZCode 移动端）。前置：DSH 已就地重启，
+> v1.7.1 + 供应商堆叠已生效。视觉基准：D:\QQ.file\Screenshot_20260905_011432.jpg（ZCode 截图）。
+
+```text
+任务：为 DSH 插件 mobile-remote 实现五条新需求（视觉对齐 ZCode + 会话生命周期管理）。
+工作目录 D:\dsh-plugins\mobile-remote。环境：Windows + Git Bash，node v24 在 PATH。
+开工必读：docs/optimization-tasks.md 的 C1/C2 段（前两轮修复背景）+ docs/probe-findings.md。
+
+关键 API 事实（已调研，sessionController 现成能力，勿重新推导）：
+- sessionController.drop(sessionId)（dsh-api-session-controller/lib/client.js:1538）：
+  从 live 注册表删除并触发清理（drainSessionDisposals）——删除会话/丢弃空会话共用此 API。
+- create({cwd}) 建 / drop(sid) 删，二者已/将接入本插件（P10 已证实 create 路径）。
+
+五条需求（每条独立 commit，按此顺序）：
+1. style: 字号对齐 ZCode 移动端
+   视觉基准：用户截图（ZCode）——正文基准从 15px 调至约 14px，标题/气泡/footnote 各层级
+   等比收紧，列表行更密；具体取值以截图目测为准，允许 ±0.5px 微调，一轮内完成不许反复。
+2. style: 底栏对齐 ZCode
+   截图底栏特征：浅色调毛玻璃（半透明面板 + backdrop blur）、图标键无底色或极淡底色、
+   无边框描边、整体扁平。改 #composer 与 .barBtn 的 CSS（E 令牌基础上调），布局与键位不动。
+3. feat(thinking): 思考过程自动堆叠
+   现状：每个 step 一个 thinkBlock（默认收起但各自独立成块）。
+   改为：同一回合内多个思考块自动堆叠——收起态合并为一条紧凑摘要条（"思考 · N 段 · M 字"），
+   只保留最新一条的可展开性；展开后按段落纵向排列。历史思考只保留摘要，不保留全文 DOM
+   （流式期间全文照旧累积，定稿后瘦身）。localStorage 折叠偏好沿用。
+4. feat(new-session): 空会话不存档
+   /new 创建的会话，若用户从未发送消息（无任务运行）就离开/切换/断开——自动 drop 该会话
+   （仅对"本插件 /new 创建且零输入"的会话生效，绝不动用户电脑端建的会话）；
+   实现点：页面端记录 newCreatedSid，切换会话/回首页/关闭页面时若其消息数为 0 则
+   POST /mobile-remote/drop；服务端校验"该会话确为本插件所建 + 无 user/message 事件"再调
+   sessionController.drop，双端校验防误删。drop 失败静默（会话残留无害）。
+5. feat(delete): 移动端删除会话
+   会话行滑动露出红色删除按钮（iOS 滑动删除交互）或长按菜单（选易实现的）；
+   点击后二次确认弹窗（居中小窗，同模型弹窗形态）→ POST /mobile-remote/delete {token,sid} →
+   服务端 sessionController.drop(sid)。仅允许删除"persisted 但非当前绑定"的会话；
+   live 运行中的会话禁删（按钮置灰 + 提示）。删除后列表即时移除 + toast。
+   审计记 session_delete（含 sid，不含内容）。
+
+护栏：红线 25 万 token；五条独立 commit；视觉两条（1/2）各一轮迭代不许反复；
+同一问题重试 ≤2 次；drop/delete 路径必须先 mock 冒烟（新增 smoke-c3.mjs：空会话 drop、
+删除确认、live 会话禁删三组断言）再真机；交付前全部旧冒烟（136 断言）+ 新增全过。
+
+验收（真机）：字号/底栏与截图气质一致；多条思考堆叠成一条可展开摘要；新建不发言离开后
+会话不出现；滑动/长按可删一条历史会话且二次确认生效；运行中会话禁删。
+交付：版本 1.8.0；CHANGELOG；roadmap 记录；tag c3-features-done。
+预算提示：目标 15–25 万 token。
+```
+
+---
+
 ## 大任务 C2 · 真机反馈修复轮 II（两条，基于 v1.7.0，目标 6–12 万，红线 12 万）
 
 > 来源：用户真机使用 v1.7.0 的反馈（2026-09-03）。壳侧三问题（顶部小黑条/软键盘遮挡/
